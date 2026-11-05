@@ -1,0 +1,29 @@
+[project]
+name = "scedrep"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "fig-tensor", email = "353080086+fig-tensor@users.noreply.github.com" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "duckdb>=2.0.0",
+    "gridstatus>=0.37.0",
+    "highspy>=1.15.1",
+    "pandas>=2.3.3",
+    "pyomo>=6.10.1",
+]
+
+[project.scripts]
+scedrep = "scedrep:main"
+
+[build-system]
+requires = ["uv_build>=0.13.7,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+    "ruff>=0.17.4",
+]
