@@ -1,20 +1,23 @@
 import pyomo.environ as pyo
 
 
-def solve_interval(units, load):
+def solve_interval(units, load, penalty):
     # make an empty model
     m = pyo.ConcreteModel()
     # set names = names of the units
     m.names = pyo.Set(initialize=units.keys())
     # variables p[u] >= 0
     m.p = pyo.Var(m.names, within=pyo.NonNegativeReals)
+    # shortage when load exceeds capacity: load > sum of p[u]
+    m.s = pyo.Var(within=pyo.NonNegativeReals)
     # constraint for each u: p[u] <= max MW of u
     m.cap = pyo.Constraint(m.names, rule=lambda m, u: m.p[u] <= units[u][0])
     # constraint: sum of p[u] == load
-    m.balance = pyo.Constraint(expr=sum(m.p[u] for u in m.names) == load)
+    m.balance = pyo.Constraint(expr=sum(m.p[u] for u in m.names) + m.s == load)
     # objective: minimize sum of price[u] * p[u]
     m.cost = pyo.Objective(
-        expr=sum(units[u][1] * m.p[u] for u in m.names), sense=pyo.minimize
+        expr=sum(units[u][1] * m.p[u] for u in m.names) + m.s * penalty,
+        sense=pyo.minimize,
     )
     # ask for duals
     m.dual = pyo.Suffix(direction=pyo.Suffix.IMPORT)
@@ -25,4 +28,5 @@ def solve_interval(units, load):
     return {
         "dispatch": {u: pyo.value(m.p[u]) for u in m.names},
         "lambda": m.dual[m.balance],
+        "shortage": pyo.value(m.s),
     }
