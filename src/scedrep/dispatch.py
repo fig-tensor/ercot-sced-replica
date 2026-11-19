@@ -1,32 +1,58 @@
+import itertools
+
 import pyomo.environ as pyo
+from pyomo.contrib.solver.solvers.highs import Highs
 
 
 def solve_interval(units, load, penalty):
-    # make an empty model
+
+    segs = {}
+    for u in units:
+        curve = units[u]["curve"]
+        for k, (a, b) in enumerate(itertools.pairwise(curve)):
+            # a is [q_k, price_k], b is [q_k+1, price_k+1]
+            # width = (b's MW) - (a's MW)
+            width = b[0] - a[0]
+            # if width == 0: skip this pair  (Python word: continue)
+            if width == 0:
+                continue
+            # slope = (b's price - a's price) / width
+            slope = (b[1] - a[1]) / width
+            # segs[u, k] = (width, a's price, slope)
+            segs[u, k] = (width, a[1], slope)
+        # make an empty model
     m = pyo.ConcreteModel()
-    # set names = names of the units
+    # set U = unit names
     m.names = pyo.Set(initialize=units.keys())
-    # variables p[u] >= 0
-    m.p = pyo.Var(m.names, within=pyo.NonNegativeReals)
-    # shortage when load exceeds capacity: load > sum of p[u]
+    # set S = segment keys (u, k)
+    m.S = pyo.Set(initialize=segs.keys(), dimen=2)
+    # x[u,k] in [0, width]
+    m.x = pyo.Var(m.S, bounds=lambda m, u, k: (0, segs[u, k][0]))
+    # p[u] in [ldl, hdl]
+    m.p = pyo.Var(m.names, bounds=lambda m, u: (units[u]["ldl"], units[u]["hdl"]))
+    # s >= 0
     m.s = pyo.Var(within=pyo.NonNegativeReals)
-    # constraint for each u: p[u] <= max MW of u
-    m.cap = pyo.Constraint(m.names, rule=lambda m, u: m.p[u] <= units[u][0])
-    # constraint: sum of p[u] == load
+    # link, one per unit: p[u] == sum of x[u,k] over that unit's segments
+    m.link = pyo.Constraint(
+        m.names, rule=lambda m, u: m.p[u] == sum(m.x[v, k] for (v, k) in m.S if v == u)
+    )
+    # balance: sum of p[u] + s == load
     m.balance = pyo.Constraint(expr=sum(m.p[u] for u in m.names) + m.s == load)
-    # objective: minimize sum of price[u] * p[u]
+    # objective: sum over (u,k) of price*x + 0.5*slope*x**2, plus penalty*s
     m.cost = pyo.Objective(
-        expr=sum(units[u][1] * m.p[u] for u in m.names) + m.s * penalty,
+        expr=sum(
+            segs[u, k][1] * m.x[u, k] + 0.5 * segs[u, k][2] * m.x[u, k] ** 2
+            for (u, k) in m.S
+        )
+        + penalty * m.s,
         sense=pyo.minimize,
     )
-    # ask for duals
-    m.dual = pyo.Suffix(direction=pyo.Suffix.IMPORT)
-    # solve
-    pyo.SolverFactory("appsi_highs").solve(m)
-    # return a dict: {"dispatch": {u: p[u] value}, "lambda": dual of the balance constraint}
+    # solve and get duals
+    results = Highs().solve(m)
+    duals = results.solution_loader.get_duals()
 
     return {
         "dispatch": {u: pyo.value(m.p[u]) for u in m.names},
-        "lambda": m.dual[m.balance],
+        "lambda": duals[m.balance],
         "shortage": pyo.value(m.s),
     }
