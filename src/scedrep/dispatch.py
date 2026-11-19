@@ -1,3 +1,5 @@
+import itertools
+
 import pyomo.environ as pyo
 from pyomo.contrib.solver.solvers.highs import Highs
 
@@ -7,7 +9,7 @@ def solve_interval(units, load, penalty):
     segs = {}
     for u in units:
         curve = units[u]["curve"]
-        for k, (a, b) in enumerate(zip(curve, curve[1:])):
+        for k, (a, b) in enumerate(itertools.pairwise(curve)):
             # a is [q_k, price_k], b is [q_k+1, price_k+1]
             # width = (b's MW) - (a's MW)
             width = b[0] - a[0]
