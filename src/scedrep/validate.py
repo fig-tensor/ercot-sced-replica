@@ -35,3 +35,22 @@ def run_day(gen, penalty=5000):
             )
     # return pd.DataFrame(rows)
     return pd.DataFrame(rows)
+
+
+def compare_day(res, lam, sp):
+    lam = lam.copy()
+    # ERCOT lambda: parse SCEDTimestamp into tz-aware "SCED Timestamp" (US/Central)
+    lam["SCED Timestamp"] = pd.to_datetime(lam["SCEDTimestamp"]).dt.tz_localize(
+        "US/Central"
+    )
+    # join res to lam on "SCED Timestamp" (keep every model run)
+    cmp = res.merge(
+        lam[["SCED Timestamp", "UncappedSystemLambda"]], on="SCED Timestamp", how="left"
+    )
+    # err = model_lambda - UncappedSystemLambda
+    cmp["err"] = cmp["model_lambda"] - cmp["UncappedSystemLambda"]
+    # congested = timestamp has any constraint with Shadow Price > 0 in sp
+    cong = sp.loc[sp["Shadow Price"] > 0, "SCED Timestamp"].unique()
+    cmp["congested"] = cmp["SCED Timestamp"].isin(cong)
+    # return the joined table
+    return cmp
