@@ -25,3 +25,5 @@ Results - 2026-09-08, 290 SCED runs, error = model λ - ERCOT UncappedSystemLamb
 - Congested runs (174) - median -$8.71, mean -$17.52. Copper plate misses congestion; the model runs low.
 - By hour - essentially exact 0:00-8:00; -$6 to -$11 through the solar hours (9-17); -$30 to -$53 at the evening net peak (18-21), with ERCOT at $459 at 21:15.
 - Congested bucket still mixes congestion with evening AS scarcity; separating them (MCPC axis) is next.
+
+Daily run: a scheduled GitHub workflow re-clears the newest disclosed day (about 61 days back) and appends a summary row to results/daily.csv.
