@@ -13,13 +13,18 @@ def solve_interval(units, load, penalty):
             # a is [q_k, price_k], b is [q_k+1, price_k+1]
             # width = (b's MW) - (a's MW)
             width = b[0] - a[0]
-            # if width == 0: skip this pair  (Python word: continue)
-            if width == 0:
+            # if width == 0: skip this pair
+            if width < 0.1:
                 continue
             # slope = (b's price - a's price) / width
             slope = (b[1] - a[1]) / width
+            price = a[1]
+            if slope > 1000 or slope < 1e-3:
+                price = (a[1] + b[1]) / 2
+                slope = 0
             # segs[u, k] = (width, a's price, slope)
-            segs[u, k] = (width, a[1], slope)
+            segs[u, k] = (width, price, slope)
+
         # make an empty model
     m = pyo.ConcreteModel()
     # set U = unit names
@@ -48,7 +53,13 @@ def solve_interval(units, load, penalty):
         sense=pyo.minimize,
     )
     # solve and get duals
-    results = Highs().solve(m)
+    results = Highs().solve(
+        m,
+        solver_options={
+            "primal_feasibility_tolerance": 1e-6,
+            "dual_feasibility_tolerance": 1e-6,
+        },
+    )
     duals = results.solution_loader.get_duals()
 
     return {
