@@ -4,7 +4,7 @@ import pyomo.environ as pyo
 from pyomo.contrib.solver.solvers.highs import Highs
 
 
-def solve_interval(units, load, penalty):
+def solve_interval(units, load, penalty, tee=False):
 
     segs = {}
     for u in units:
@@ -55,8 +55,9 @@ def solve_interval(units, load, penalty):
     # solve and get duals
     results = Highs().solve(
         m,
+        tee=tee,
         solver_options={
-            "primal_feasibility_tolerance": 1e-6,
+            "primal_feasibility_tolerance": 1e-4,
             "dual_feasibility_tolerance": 1e-6,
         },
     )
