@@ -28,3 +28,19 @@ def fit_shift_factors(Ys, Ms):
     B = np.linalg.lstsq(M.values, Y.values, rcond=None)[0]
     # the model is Y = -M @ SF, so SF = -B
     return pd.DataFrame(-B, index=M.columns, columns=Y.columns)
+
+def congestion_matrices(lmp, lam, sp):
+    # build one day's regression matrices.
+    # Resource nodes only; hubs and load zones are averages over many buses
+    lmp = lmp[lmp["Location Type"] == "Resource Node"]
+    # Congestion component of each node in each run: LMP_n - lambda
+    lmp = lmp.merge(lam[["SCED Timestamp", "lam"]], on="SCED Timestamp")
+    lmp = lmp.assign(cong=lmp["LMP"] - lmp["lam"])
+    Y = lmp.pivot_table(index="SCED Timestamp", columns="Location", values="cong").fillna(0.0)
+    # Binding constraints, keyed as "monitored element | contingency"
+    b = sp[sp["Shadow Price"] > 0]
+    b = b.assign(key=b["Constraint Name"] + " | " + b["Contingency Name"])
+    M = b.pivot_table(index="SCED Timestamp", columns="key", values="Shadow Price", aggfunc="sum")
+    # Same runs as Y; a constraint that didn't bind in a run has mu = 0
+    M = M.reindex(Y.index).fillna(0.0)
+    return Y, M

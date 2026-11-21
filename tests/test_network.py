@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-from scedrep.network import fit_shift_factors, unit_nodes
+from scedrep.network import congestion_matrices, fit_shift_factors, unit_nodes
 
 
 def test_unit_nodes():
@@ -29,3 +29,32 @@ def test_fit_shift_factors():
     # the fit should recover SF exactly (no noise in the toy data)
     est = fit_shift_factors([Y1, Y2], [M1, M2])
     assert np.allclose(est.loc[SF.index, SF.columns], SF)
+
+def test_congestion_matrices():
+    # Two SCED runs with lambda 30 and 40
+    ts = pd.to_datetime(["2026-09-08 00:00:15", "2026-09-08 00:05:15"]).tz_localize("US/Central")
+    lam = pd.DataFrame({"SCED Timestamp": ts, "lam": [30.0, 40.0]})
+
+    # Two resource nodes plus a hub, which should be dropped
+    lmp = pd.DataFrame({
+        "SCED Timestamp": [ts[0], ts[0], ts[1], ts[1], ts[0]],
+        "Location": ["N1", "N2", "N1", "N2", "HB_HOUSTON"],
+        "Location Type": ["Resource Node"] * 4 + ["Trading Hub"],
+        "LMP": [30.0, 25.0, 45.0, 40.0, 29.0],
+    })
+
+    # One constraint binds in run 2; a zero shadow price means not binding
+    sp = pd.DataFrame({
+        "SCED Timestamp": [ts[1], ts[1]],
+        "Constraint Name": ["L1", "L2"],
+        "Contingency Name": ["K1", "K2"],
+        "Shadow Price": [12.0, 0.0],
+    })
+
+    Y, M = congestion_matrices(lmp, lam, sp)
+
+    assert list(Y.columns) == ["N1", "N2"]         # hub dropped
+    assert Y.loc[ts[0]].tolist() == [0.0, -5.0]    # LMP - lambda, run 1
+    assert Y.loc[ts[1]].tolist() == [5.0, 0.0]     # LMP - lambda, run 2
+    assert list(M.columns) == ["L1 | K1"]          # non-binding L2 dropped
+    assert M["L1 | K1"].tolist() == [0.0, 12.0]    # mu = 0 when not binding
