@@ -59,6 +59,7 @@ def solve_interval(units, load, penalty, tee=False):
         solver_options={
             "primal_feasibility_tolerance": 1e-4,
             "dual_feasibility_tolerance": 1e-6,
+            "time_limit": 20,
         },
     )
     duals = results.solution_loader.get_duals()
