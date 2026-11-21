@@ -3,6 +3,7 @@ from pyomo.contrib.solver.common.util import NoDualsError, NoOptimalSolutionErro
 
 from scedrep.build import build_interval
 from scedrep.dispatch import solve_interval
+from scedrep.fetch import lambda_timestamps
 
 
 def run_day(gen, penalty=5000):
@@ -39,15 +40,7 @@ def run_day(gen, penalty=5000):
 
 
 def compare_day(res, lam, sp):
-    lam = lam.copy()
-    # converts the flag to text, uppercases it, and counts it as “repeated” only if it reads Y or TRUE (handles both the archive’s "Y"/"N" and the live endpoint’s True/False).
-    flag = (
-        lam["RepeatedHourFlag"].astype(str).str.strip().str.upper().isin(["Y", "TRUE"])
-    )
-    # ERCOT lambda: parse SCEDTimestamp into tz-aware "SCED Timestamp" (US/Central)
-    lam["SCED Timestamp"] = pd.to_datetime(lam["SCEDTimestamp"]).dt.tz_localize(
-        "US/Central", ambiguous=~flag
-    )
+    lam = lambda_timestamps(lam)
     # join res to lam on "SCED Timestamp" (keep every model run)
     cmp = res.merge(
         lam[["SCED Timestamp", "UncappedSystemLambda"]], on="SCED Timestamp", how="left"
