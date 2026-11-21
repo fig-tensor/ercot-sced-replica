@@ -27,3 +27,5 @@ Results - 2026-09-08, 290 SCED runs, error = model λ - ERCOT UncappedSystemLamb
 - Congested bucket still mixes congestion with evening AS scarcity; separating them (MCPC axis) is next.
 
 Daily run: a scheduled GitHub workflow re-clears the newest disclosed day (about 61 days back) and appends a summary row to results/daily.csv.
+
+Teaching: the repo is also intended as a worked example for teaching optimization and applied ML on real market data. Built so far - LP and QP, from a two-unit toy dispatch with hand-checkable duals, through offer-curve segments as a convex QP, to clearing real ERCOT intervals; the known-answer tests are the worked examples. Planned - supervised learning on the validation results (regressing λ error on congestion, load, renewables and hour, with a date-based train/test split).
