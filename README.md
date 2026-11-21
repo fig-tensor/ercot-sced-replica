@@ -27,7 +27,7 @@ Known gaps:
 - Copper plate - no transmission constraints.
 - No unit commitment - offline and quick-start units are never started.
 - Runs that hit the 20 s limit are recorded as failed (ok = False), not solved.
-- Daylight-saving days not yet handled (repeated hour needs ERCOT's RepeatedHourFlag).
+- Daylight-saving: the fall-back repeated hour is matched using ERCOT's RepeatedHourFlag; spring-forward unverified until the daily run reaches mid-March.
 
 Notes: Degenerate λ at supply-curve steps - when load lands exactly on a step, any λ between the adjacent offers clears. The original LP returned the upper end (50 of [20, 50]); the segment QP returns the lower (20). Solver/formulation artifact, not a market rule.
 
