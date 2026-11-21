@@ -42,7 +42,7 @@ def compare_day(res, lam, sp):
     lam = lam.copy()
     # ERCOT lambda: parse SCEDTimestamp into tz-aware "SCED Timestamp" (US/Central)
     lam["SCED Timestamp"] = pd.to_datetime(lam["SCEDTimestamp"]).dt.tz_localize(
-        "US/Central"
+        "US/Central", ambiguous=~lam["RepeatedHourFlag"].astype(bool)
     )
     # join res to lam on "SCED Timestamp" (keep every model run)
     cmp = res.merge(
