@@ -1,5 +1,9 @@
 # ercot-sced-replica
 
+Re-clears ERCOT's real-time market from public data. When no transmission constraint binds, the median error against ERCOT's published price is one cent (80% of runs within $0.85).
+
+![ERCOT system lambda vs replica, 2026-09-08](docs/lambda_2026-09-08.png)
+
 A replica of ERCOT's real-time market clearing (SCED), being rebuilt from public 60-day disclosure data and validated against published prices.
 
 Status: energy-only clearing of every SCED run in a day from real 60-day data, offer curves solved as a convex QP (HiGHS). A scheduled daily run validates the newest disclosed day; running record in results/daily.csv.
