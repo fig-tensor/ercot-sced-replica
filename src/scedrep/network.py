@@ -45,7 +45,7 @@ def congestion_matrices(lmp, lam, sp):
     M = M.reindex(Y.index).fillna(0.0)
     return Y, M
 
-def build_network(bp, node, SF, sp_run, sf_min=0.01):
+def build_network(bp, node, SF, sp_run, sf_min=0.0):
     """Network constraints for one SCED run, in the form solve_interval takes.
 
     bp:     base point of each dispatchable unit (Series: unit -> MW).

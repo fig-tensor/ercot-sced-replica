@@ -13,28 +13,34 @@ def run_day(gen, penalty=5000, net=None):
     for ts in sorted(gen["SCED Timestamp"].unique()):
         print(f"{ts}", flush=True)
         units, load = build_interval(gen, ts)
+        row = {"SCED Timestamp": ts, "ok": False}
 
-        # Network constraints for this run (none if net is None)
-        network = []
-        if net is not None:
-            node, SF, sp = net
-            bp = pd.Series({u: units[u]["bp"] for u in units})
-            network = build_network(bp, node, SF, sp[sp["SCED Timestamp"] == ts])
-
-        try:
-            out = solve_interval(units, load, penalty, network)
-            rows.append({
-                "SCED Timestamp": ts,
+        # Without a network: one attempt. With one: all shift factors first, and if the
+        # QP stalls, retry with tiny ones (|SF| < 0.01) cut, which stops the cycling
+        cutoffs = [None] if net is None else [0.0, 0.01]
+        for sf_min in cutoffs:
+            network = []
+            if sf_min is not None:
+                node, SF, sp = net
+                bp = pd.Series({u: units[u]["bp"] for u in units})
+                network = build_network(bp, node, SF, sp[sp["SCED Timestamp"] == ts], sf_min)
+            try:
+                out = solve_interval(units, load, penalty, network)
+            except (NoOptimalSolutionError, NoDualsError) as e:
+                row["error"] = repr(e)
+                continue
+            row.update({
                 "model_lambda": out["lambda"],
                 "shortage": out["shortage"],
                 "n_network": len(network),
                 "violation": sum(out["violation"]),
+                "sf_min": sf_min,
                 "ok": True,
             })
-        except (NoOptimalSolutionError, NoDualsError) as e:
-            rows.append({"SCED Timestamp": ts, "ok": False, "error": repr(e)})
-    return pd.DataFrame(rows)
+            break
 
+        rows.append(row)
+    return pd.DataFrame(rows)
 def compare_day(res, lam, sp):
     lam = lambda_timestamps(lam)
     # join res to lam on "SCED Timestamp" (keep every model run)
