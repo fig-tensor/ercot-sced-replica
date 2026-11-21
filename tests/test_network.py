@@ -1,14 +1,18 @@
 import numpy as np
 import pandas as pd
 
-from scedrep.network import congestion_matrices, fit_shift_factors, unit_nodes
+from scedrep.network import (
+    build_network,
+    congestion_matrices,
+    fit_shift_factors,
+    unit_nodes,
+)
 
 
 def test_unit_nodes():
     # toy mapping tables: two plain units and one combined-cycle train
     rn = pd.DataFrame({"Resource Node": ["A_RN", "H_RN"], "Unit Substation": ["A", "HICK"], "Unit Name": ["G1", "G1"]})
     ccp = pd.DataFrame({"CCP Name": ["B_CC1"], "Logical Resource Node Name": ["B_CC1"]})
-
     # one name per rule, plus one that matches nothing
     node = unit_nodes(["A_G1", "B_CC1_3", "HICK_G1_J02", "X_SOLAR1"], rn, ccp)
 
@@ -28,29 +32,27 @@ def test_fit_shift_factors():
     Y2 = -M2 @ SF
     # the fit should recover SF exactly (no noise in the toy data)
     est = fit_shift_factors([Y1, Y2], [M1, M2])
+   
     assert np.allclose(est.loc[SF.index, SF.columns], SF)
 
 def test_congestion_matrices():
-    # Two SCED runs with lambda 30 and 40
+    # two SCED runs with lambda 30 and 40
     ts = pd.to_datetime(["2026-09-08 00:00:15", "2026-09-08 00:05:15"]).tz_localize("US/Central")
     lam = pd.DataFrame({"SCED Timestamp": ts, "lam": [30.0, 40.0]})
-
-    # Two resource nodes plus a hub, which should be dropped
+    # two resource nodes plus a hub, which should be dropped
     lmp = pd.DataFrame({
         "SCED Timestamp": [ts[0], ts[0], ts[1], ts[1], ts[0]],
         "Location": ["N1", "N2", "N1", "N2", "HB_HOUSTON"],
         "Location Type": ["Resource Node"] * 4 + ["Trading Hub"],
         "LMP": [30.0, 25.0, 45.0, 40.0, 29.0],
     })
-
-    # One constraint binds in run 2; a zero shadow price means not binding
+    # one constraint binds in run 2; a zero shadow price means not binding
     sp = pd.DataFrame({
         "SCED Timestamp": [ts[1], ts[1]],
         "Constraint Name": ["L1", "L2"],
         "Contingency Name": ["K1", "K2"],
         "Shadow Price": [12.0, 0.0],
     })
-
     Y, M = congestion_matrices(lmp, lam, sp)
 
     assert list(Y.columns) == ["N1", "N2"]         # hub dropped
@@ -58,3 +60,26 @@ def test_congestion_matrices():
     assert Y.loc[ts[1]].tolist() == [5.0, 0.0]     # LMP - lambda, run 2
     assert list(M.columns) == ["L1 | K1"]          # non-binding L2 dropped
     assert M["L1 | K1"].tolist() == [0.0, 12.0]    # mu = 0 when not binding
+
+def test_build_network():
+    # base points: ERCOT dispatched A at 60 and B at 40; C has no known node
+    bp = pd.Series({"A": 60.0, "B": 40.0, "C": 5.0})
+    node = pd.Series({"A": "N1", "B": "N2"})
+    # estimated shift factors for one constraint
+    SF = pd.DataFrame({"N1": [1.0], "N2": [0.0]}, index=["L1 | K1"])
+    # L1 binds at its limit; L9 binds but has no estimate; L2 isn't binding
+    sp_run = pd.DataFrame({
+        "Constraint Name": ["L1", "L9", "L2"],
+        "Contingency Name": ["K1", "K9", "K2"],
+        "Shadow Price": [30.0, 12.0, 0.0],
+        "Limit": [60.0, 100.0, 50.0],
+        "Value": [60.0, 100.0, 20.0],
+        "Max Shadow Price": [1000.0, 1000.0, 1000.0],
+    })
+    net = build_network(bp, node, SF, sp_run)
+    
+    # only L1 survives; rhs = (60 - 60) + 1 * 60 = 60, so A can't exceed ERCOT's 60 MW
+    assert len(net) == 1
+    assert net[0]["sf"] == {"A": 1.0}
+    assert net[0]["rhs"] == 60.0
+    assert net[0]["penalty"] == 1000.0
