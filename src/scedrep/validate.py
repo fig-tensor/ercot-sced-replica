@@ -9,6 +9,7 @@ def run_day(gen, penalty=5000):
     rows = []
     # for each distinct SCED timestamp, in time order:
     for ts in sorted(gen["SCED Timestamp"].unique()):
+        print(f"{ts}", flush=True)
         #     build units and load for that timestamp
         units, load = build_interval(gen, ts)
         #     try to solve; record {"SCED Timestamp": ts, "model_lambda": ..., "shortage": ..., "ok": True}
