@@ -4,6 +4,7 @@ import gridstatus
 import pandas as pd
 from gridstatus.ercot_api.ercot_api import ErcotAPI
 
+from scedrep.fetch import get_lambda
 from scedrep.validate import compare_day, run_day
 
 
@@ -18,34 +19,9 @@ def run_date(date, out="results/daily.csv"):
         "sced_gen_resource"
     ]
 
-    # lam = ERCOT system lambda from date to date + 1 day
-    nxt = (pd.Timestamp(date) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+    # lam = ERCOT system lambda for every SCED run on this date
     api = ErcotAPI()
-    lam = api.hit_ercot_api(
-        "/np6-322-cd/sced_system_lambda",
-        SCEDTimestampFrom=f"{date}T00:00:00",
-        SCEDTimestampTo=f"{nxt}T00:00:00",
-    )
-
-    # fallback to archive data when live endpoint returns nothing
-    if len(lam) == 0:
-        tz = "US/Central"
-        lam = api.get_historical_data(
-            "/np6-322-cd/sced_system_lambda",
-            pd.Timestamp(date, tz=tz),
-            pd.Timestamp(f"{nxt} 01:00", tz=tz),
-        ).rename(
-            columns={
-                "SCEDTimeStamp": "SCEDTimestamp",
-                "SystemLambda": "UncappedSystemLambda",
-            }
-        )
-
-    # use capped lambda where ERCOT's uncapped value is missing (older days)
-    if "CappedSystemLambda" in lam.columns:
-        lam["UncappedSystemLambda"] = pd.to_numeric(
-            lam["UncappedSystemLambda"], errors="coerce"
-        ).fillna(lam["CappedSystemLambda"])
+    lam = get_lambda(api, date)
 
     # sp = SCED shadow prices for this date
     sp = api.get_shadow_prices_sced(date)
