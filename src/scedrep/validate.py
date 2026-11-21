@@ -4,40 +4,36 @@ from pyomo.contrib.solver.common.util import NoDualsError, NoOptimalSolutionErro
 from scedrep.build import build_interval
 from scedrep.dispatch import solve_interval
 from scedrep.fetch import lambda_timestamps
+from scedrep.network import build_network
 
 
-def run_day(gen, penalty=5000):
+def run_day(gen, penalty=5000, net=None):
+    """Solve every SCED run in gen. net = (node, SF, sp) adds network constraints."""
     rows = []
-    # for each distinct SCED timestamp, in time order:
     for ts in sorted(gen["SCED Timestamp"].unique()):
         print(f"{ts}", flush=True)
-        #     build units and load for that timestamp
         units, load = build_interval(gen, ts)
-        #     try to solve; record {"SCED Timestamp": ts, "model_lambda": ..., "shortage": ..., "ok": True}
-        try:
-            r = solve_interval(units, load, penalty=penalty)
-            rows.append(
-                {
-                    "SCED Timestamp": ts,
-                    "model_lambda": r["lambda"],
-                    "shortage": r["shortage"],
-                    "ok": True,
-                }
-            )
-        #     if solving raises an error, record the timestamp with "ok": False instead
-        except (NoOptimalSolutionError, NoDualsError) as e:
-            rows.append(
-                {
-                    "SCED Timestamp": ts,
-                    "model_lambda": None,
-                    "shortage": None,
-                    "ok": False,
-                    "error": repr(e),
-                }
-            )
-    # return pd.DataFrame(rows)
-    return pd.DataFrame(rows)
 
+        # Network constraints for this run (none if net is None)
+        network = []
+        if net is not None:
+            node, SF, sp = net
+            bp = pd.Series({u: units[u]["bp"] for u in units})
+            network = build_network(bp, node, SF, sp[sp["SCED Timestamp"] == ts])
+
+        try:
+            out = solve_interval(units, load, penalty, network)
+            rows.append({
+                "SCED Timestamp": ts,
+                "model_lambda": out["lambda"],
+                "shortage": out["shortage"],
+                "n_network": len(network),
+                "violation": sum(out["violation"]),
+                "ok": True,
+            })
+        except (NoOptimalSolutionError, NoDualsError) as e:
+            rows.append({"SCED Timestamp": ts, "ok": False, "error": repr(e)})
+    return pd.DataFrame(rows)
 
 def compare_day(res, lam, sp):
     lam = lambda_timestamps(lam)

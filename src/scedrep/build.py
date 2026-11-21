@@ -7,9 +7,9 @@ def build_interval(gen, ts):
     rows = rows[rows["HDL"] - rows["LDL"] > 0.1]
     # units = {name: {"curve": SCED2 curve, "ldl": LDL, "hdl": HDL}} for those rows
     units = {
-        name: {"curve": c, "ldl": lo, "hdl": hi}
-        for name, c, lo, hi in zip(
-            rows["Resource Name"], rows["SCED2 Offer Curve"], rows["LDL"], rows["HDL"]
+        name: {"curve": c, "ldl": lo, "hdl": hi, "bp": bp}
+        for name, c, lo, hi, bp in zip(
+            rows["Resource Name"], rows["SCED2 Offer Curve"], rows["LDL"], rows["HDL"], rows["Base Point"], strict=True
         )
     }
     # load = sum of Base Point over those rows
