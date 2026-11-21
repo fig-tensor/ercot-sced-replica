@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 
 
@@ -15,3 +16,15 @@ def unit_nodes(names, rn, ccp):
     node = node.fillna(names.str.replace(r"_J\d+$", "", regex=True).map(direct))
     # index by resource name so node["AMOCOOIL_CC1_3"] returns "AMOCOOIL_CC1"
     return pd.Series(node.values, index=names.values)
+
+def fit_shift_factors(Ys, Ms):
+    # estimate shift factors from several days of congestion data.
+    # stack the days; keep only nodes present on every day
+    Y = pd.concat(Ys, join="inner")
+    # stack shadow prices; a constraint missing on a day didn't bind, so mu = 0.
+    # reindex to Y's runs so row i of M and row i of Y are the same SCED run.
+    M = pd.concat(Ms).reindex(Y.index).fillna(0.0)
+    # least squares for every node at once: minimize ||Y - M @ B||^2 over B
+    B = np.linalg.lstsq(M.values, Y.values, rcond=None)[0]
+    # the model is Y = -M @ SF, so SF = -B
+    return pd.DataFrame(-B, index=M.columns, columns=Y.columns)
