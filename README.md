@@ -32,6 +32,18 @@ Known gaps:
 - Runs that hit the 20 s limit are recorded as failed (ok = False), not solved.
 - Daylight-saving: the fall-back repeated hour is matched using ERCOT's RepeatedHourFlag; spring-forward unverified until the daily run reaches mid-March.
 
+## Congestion (in progress)
+
+ERCOT posts shift factors only to the MIS Secure Area, which requires market-participant credentials, so this project doesn't use them. It estimates them from public data instead. In each SCED run, a node's congestion component is LMP − λ = −Σ SF·μ, summed over the binding constraints, so regressing node prices on ERCOT's published shadow prices recovers the shift factors.
+
+Out of sample (test days Sept 15–21, 2026, each trained on the 14 days before it), the median day removes 97% of the squared congestion error compared with predicting no congestion. Five of the seven days are at 96% or better.
+
+Limits that come from not having the real shift factors:
+- A constraint that didn't bind in the training window has no estimate. On an average test day, about a quarter of the shadow price falls on such constraints.
+- Event days fail. On Sept 16, 2026, 78% of the shadow price was on lines that hadn't bound in the prior two weeks, and the estimate removed only 16% of the error.
+- The same line under a different contingency is a separate constraint with its own shift factors, so coverage grows slowly with more history.
+- Resources are matched to nodes using ERCOT's latest public mapping file (NP4-160), not the one in force on the day being modeled. 99.9% of resources match.
+
 Notes: Degenerate λ at supply-curve steps - when load lands exactly on a step, any λ between the adjacent offers clears. The original LP returned the upper end (50 of [20, 50]); the segment QP returns the lower (20). Solver/formulation artifact, not a market rule.
 
 Daily run: a scheduled GitHub workflow re-clears the newest disclosed day (about 61 days back) and appends a summary row to results/daily.csv.
