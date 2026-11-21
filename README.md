@@ -14,13 +14,12 @@ Modeling choices:
 - Validation target - UncappedSystemLambda. Where ERCOT's uncapped value is missing (older days), CappedSystemLambda is used instead; if the live endpoint has no data, the archive's SystemLambda (no capped/uncapped split). The two matched on every 2026-09-08 run.
 - Numerical cleaning - segments under 0.1 MW dropped, slopes outside [0.001, 1000] flattened at average price. HiGHS tolerances: primal 1e-4 MW (scale-appropriate for a ~60 GW balance), dual 1e-6 $/MWh. 20 s time limit per SCED run.
 
-Results - error = model λ - ERCOT UncappedSystemLambda:
-- 2026-09-08, 290 runs, all solved:
-  - Uncongested runs (116) - median error -$0.04/MWh, mean -$0.77. The replica reproduces SCED when no transmission constraint binds.
-  - Congested runs (174) - median -$8.71, mean -$17.52. Copper plate misses congestion; the model runs low.
-  - By hour - essentially exact 0:00-8:00; -$6 to -$11 through the solar hours (9-17); -$30 to -$53 at the evening net peak (18-21), with ERCOT at $459 at 21:15.
-- 2026-09-21 (daily run), 292 runs, all solved - uncongested median +$0.01, congested -$2.58.
-- Congested bucket still mixes congestion with evening AS scarcity; separating them (MCPC axis) is next.
+Results - error = model λ - ERCOT system lambda. 2026-08-10 to 2026-09-19 (40 days with per-run results, 11,629 SCED runs, 98.4% solved):
+- Uncongested runs (3,350) - median error -$0.01/MWh; middle 80% of runs within -$0.83 to +$0.06. The replica reproduces SCED when no transmission constraint binds.
+- Congested runs (8,090, 71% of all runs) - median -$4.23; middle 80% within -$32.85 to -$0.06. Copper plate misses congestion; the model runs low.
+- Worst uncongested day - 2026-08-27, median -$26.90: a whole-day miss without congestion points at scarcity / AS pricing (next: MCPC axis).
+- 2026-09-08 by hour - essentially exact 0:00-8:00; -$6 to -$11 through the solar hours (9-17); -$30 to -$53 at the evening net peak (18-21), with ERCOT at $459 at 21:15.
+- Daily summaries in results/daily.csv; per-run detail in results/runs/.
 
 Known gaps:
 - Energy only. Post-RTC+B SCED co-optimizes AS; holding SCED's AS awards fixed moved λ by $0.01 on the first interval.
