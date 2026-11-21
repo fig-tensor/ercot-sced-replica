@@ -45,13 +45,14 @@ def congestion_matrices(lmp, lam, sp):
     M = M.reindex(Y.index).fillna(0.0)
     return Y, M
 
-def build_network(bp, node, SF, sp_run):
+def build_network(bp, node, SF, sp_run, sf_min=0.01):
     """Network constraints for one SCED run, in the form solve_interval takes.
 
     bp:     base point of each dispatchable unit (Series: unit -> MW).
     node:   resource node of each unit (Series: unit -> node), from unit_nodes.
     SF:     estimated shift factors (constraints x nodes), from fit_shift_factors.
     sp_run: this run's rows of the SCED shadow-price table.
+    sf_min: shift factors with |SF| below this are set to 0 (regression noise).
     Returns a list of {"sf": {unit: SF}, "rhs": float, "penalty": float}.
     """
     network = []
@@ -67,6 +68,9 @@ def build_network(bp, node, SF, sp_run):
 
         # A unit's shift factor is its node's; no node or no estimate means 0
         sf = node.map(SF.loc[key]).reindex(bp.index).fillna(0.0)
+
+        # Drop tiny shift factors: mostly noise, and they make the QP badly scaled
+        sf = sf.where(sf.abs() >= sf_min, 0.0)
 
         # Anchor at ERCOT's dispatch: rhs = (Limit - Flow) + sum_u SF_u * BP_u
         rhs = (r["Limit"] - r["Value"]) + float((sf * bp).sum())

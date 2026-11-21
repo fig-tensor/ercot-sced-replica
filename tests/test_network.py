@@ -83,3 +83,23 @@ def test_build_network():
     assert net[0]["sf"] == {"A": 1.0}
     assert net[0]["rhs"] == 60.0
     assert net[0]["penalty"] == 1000.0
+
+def test_build_network_drops_tiny_shift_factors():
+    # Node N2's shift factor (0.004) is below the cutoff, so B drops out of the constraint
+    bp = pd.Series({"A": 60.0, "B": 40.0})
+    node = pd.Series({"A": "N1", "B": "N2"})
+    SF = pd.DataFrame({"N1": [1.0], "N2": [0.004]}, index=["L1 | K1"])
+    sp_run = pd.DataFrame({
+        "Constraint Name": ["L1"],
+        "Contingency Name": ["K1"],
+        "Shadow Price": [30.0],
+        "Limit": [60.0],
+        "Value": [60.0],
+        "Max Shadow Price": [1000.0],
+    })
+
+    net = build_network(bp, node, SF, sp_run, sf_min=0.01)
+
+    # B is gone, and rhs uses the same (cut) shift factors, so ERCOT's dispatch stays feasible
+    assert net[0]["sf"] == {"A": 1.0}
+    assert net[0]["rhs"] == 60.0
