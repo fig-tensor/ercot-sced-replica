@@ -114,3 +114,24 @@ def day_targets(api, target, hours, cache="data"):
     os.makedirs(cache, exist_ok=True)
     y.to_pickle(path)
     return y
+
+
+def dataset(api, start, end, cache="data"):
+    """Stacked features X and binding targets Y for every day from start to end (inclusive)."""
+    Xs, ys = [], []
+    for d in pd.date_range(start, end).strftime("%Y-%m-%d"):
+        print(d, flush=True)
+        try:
+            X = day_features(api, d, cache)
+            y = day_targets(api, d, X.index, cache)
+        except (ValueError, KeyError) as e:
+            # A missing report or a changed column skips the day rather than stopping the run
+            print(f"  skipped {d}: {e!r}", flush=True)
+            continue
+        Xs.append(X)
+        ys.append(y)
+
+    X = pd.concat(Xs)
+    # A constraint with no column on some day didn't bind that day: fill with 0
+    Y = pd.concat(ys).reindex(X.index).fillna(0).astype(int)
+    return X, Y

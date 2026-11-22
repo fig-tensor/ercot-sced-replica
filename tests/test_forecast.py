@@ -1,6 +1,7 @@
 import pandas as pd
 import pytest
 
+import scedrep.forecast as fc
 from scedrep.forecast import (
     LOAD,
     OUTAGE,
@@ -91,3 +92,26 @@ def test_hourly_binding():
     assert y["A | K"].tolist() == [1, 0, 0]            # two runs in hour 0 still count as 1
     assert y["C | K"].tolist() == [0, 1, 0]
     assert list(y.index) == list(hours)                # hour 2: no binding, still present
+
+def test_dataset_stacks_days_and_skips_bad_ones(monkeypatch):
+    # Day 1: constraint A binds in hour 0. Day 2: B binds in hour 1. Day 3: no report (skipped).
+    def fake_features(api, d, cache):
+        if d == "2026-09-17":
+            raise ValueError("no report")
+        hours = pd.DatetimeIndex([ts(f"{d} 00:00"), ts(f"{d} 01:00")])
+        return pd.DataFrame({"wind WEST": [1.0, 2.0]}, index=hours)
+
+    def fake_targets(api, d, hours, cache):
+        name = "A | K" if d == "2026-09-15" else "B | K"
+        col = [1, 0] if d == "2026-09-15" else [0, 1]
+        return pd.DataFrame({name: col}, index=hours)
+
+    monkeypatch.setattr(fc, "day_features", fake_features)
+    monkeypatch.setattr(fc, "day_targets", fake_targets)
+
+    X, Y = fc.dataset(None, "2026-09-15", "2026-09-17")
+
+    assert len(X) == 4                              # two good days x two hours; day 3 skipped
+    assert list(Y.index) == list(X.index)
+    assert Y["A | K"].tolist() == [1, 0, 0, 0]      # A absent on day 2: filled with 0
+    assert Y["B | K"].tolist() == [0, 0, 0, 1]
