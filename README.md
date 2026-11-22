@@ -1,12 +1,11 @@
 # ercot-sced-replica
 
-Re-clears ERCOT's real-time market from public data. When no transmission constraint binds, the median error against ERCOT's published price is one cent (80% of runs within $0.85).
+Re-clears ERCOT's real-time market from public data. When no transmission constraint binds, the median error against ERCOT's published price is one cent (80% of runs within $0.85). With transmission constraints estimated from public prices, the congested-run median error drops from -$2 to -$6 to within $0.50 on ordinary days.
 
 ![ERCOT system lambda vs replica, 2026-09-08](docs/lambda_2026-09-08.png)
 
-A replica of ERCOT's real-time market clearing (SCED), being rebuilt from public 60-day disclosure data and validated against published prices.
 
-Status: energy-only clearing of every SCED run in a day from real 60-day data, offer curves solved as a convex QP (HiGHS). A scheduled daily run validates the newest disclosed day; running record in results/daily.csv.
+Status: clearing of every SCED run in a day from real 60-day data, offer curves solved as a convex QP (HiGHS), with transmission constraints from estimated shift factors. A scheduled daily run validates the newest disclosed day with and without the network; running record in results/daily.csv.
 
 Run the tests: uv sync, then uv run pytest
 Run a day: uv run --env-file .env scedrep YYYY-MM-DD (needs ERCOT Public API credentials in .env: ERCOT_API_USERNAME, ERCOT_API_PASSWORD, ERCOT_PUBLIC_API_SUBSCRIPTION_KEY)
@@ -20,37 +19,31 @@ Modeling choices:
 
 Results - error = model λ - ERCOT system lambda. 2026-08-10 to 2026-09-19 (40 days with per-run results, 11,629 SCED runs, 98.4% solved):
 - Uncongested runs (3,350) - median error -$0.01/MWh; middle 80% of runs within -$0.83 to +$0.06. The replica reproduces SCED when no transmission constraint binds.
-- Congested runs (8,090, 71% of all runs) - median -$4.23; middle 80% within -$32.85 to -$0.06. Copper plate misses congestion; the model runs low.
+- Congested runs (8,090, 71% of all runs) - median -$4.23; middle 80% within -$32.85 to -$0.06. Copper plate misses congestion; the model runs low (without network constraints; see Congestion).
 - Worst uncongested day - 2026-08-27, median -$26.90: a whole-day miss without congestion points at scarcity / AS pricing (next: MCPC axis).
 - 2026-09-08 by hour - essentially exact 0:00-8:00; -$6 to -$11 through the solar hours (9-17); -$30 to -$53 at the evening net peak (18-21), with ERCOT at $459 at 21:15.
 - Daily summaries in results/daily.csv; per-run detail in results/runs/.
 
-Known gaps:
-- Energy only. Post-RTC+B SCED co-optimizes AS; holding SCED's AS awards fixed moved λ by $0.01 on the first interval.
-- Copper plate - no transmission constraints.
-- No unit commitment - offline and quick-start units are never started.
-- Runs that hit the 20 s limit are recorded as failed (ok = False), not solved.
-- Daylight-saving: the fall-back repeated hour is matched using ERCOT's RepeatedHourFlag; spring-forward unverified until the daily run reaches mid-March.
 
 ## Congestion
 
 Earlier versions left out transmission limits. When a line is full, cheap power can't reach load, so ERCOT dispatches more expensive units and prices rise. A model without the network misses this and comes out too low on congested runs.
 
-ERCOT posts shift factors (how much each unit's output loads each line) only to the MIS Secure Area, which requires market-participant credentials, so this project estimates them from public data. In each SCED run, a node's price is LMP = λ − Σ SF·μ, summed over the binding constraints. Regressing node prices on ERCOT's published shadow prices μ over the previous 14 days recovers the shift factors. The replica then adds one constraint per binding line, anchored at ERCOT's flow, with ERCOT's shadow-price cap as the penalty for overloading it.
+ERCOT posts shift factors (how much each unit's output loads each line) only to the MIS Secure Area, which requires market-participant credentials, so this project estimates them from public data. In each SCED run, a node's price is LMP = λ - Σ SF·μ, summed over the binding constraints. Regressing node prices on ERCOT's published shadow prices μ over the previous 14 days recovers the shift factors. The replica then adds one constraint per binding line, anchored at ERCOT's flow, with ERCOT's shadow-price cap as the penalty for overloading it.
 
 Median λ error on congested runs, without and with the network:
 
 | Date | Without | With |
 |---|---|---|
-| Sept 15, 2026 | −$6.01 | −$0.02 |
-| Sept 16, 2026 | −$19.62 | −$18.59 |
-| Sept 17, 2026 | −$10.32 | −$4.41 |
-| Sept 18, 2026 | −$2.18 | −$0.49 |
-| Sept 19, 2026 | −$2.70 | −$0.15 |
-| Sept 20, 2026 | −$4.36 | −$0.09 |
-| Sept 21, 2026 | −$2.58 | −$0.23 |
+| 2026-09-15 | -$6.01 | -$0.02 |
+| 2026-09-16 | -$19.62 | -$18.59 |
+| 2026-09-17 | -$10.32 | -$4.41 |
+| 2026-09-18 | -$2.18 | -$0.49 |
+| 2026-09-19 | -$2.70 | -$0.15 |
+| 2026-09-20 | -$4.36 | -$0.09 |
+| 2026-09-21 | -$2.58 | -$0.23 |
 
-On ordinary days the bias is gone. Sept 16 is the exception: most of its congestion was on lines that hadn't bound in the prior two weeks, so there were no estimates for them. The regression test predicted this before the replica ran. Out of sample, it explained 97% of the congestion pattern on the median day, and only 16% on Sept 16.
+On ordinary days the bias is gone. 2026-09-16 is the exception: most of its congestion was on lines that hadn't bound in the prior two weeks, so there were no estimates for them. The regression test predicted this before the replica ran. Out of sample, it explained 97% of the congestion pattern on the median day, and only 16% on 2026-09-16.
 
 The daily run now solves each day both ways and records both in `results/daily.csv`.
 
@@ -59,10 +52,17 @@ What this does and doesn't show:
 - A constraint that didn't bind in the 14-day training window has no estimate. On an average day, about a quarter of the shadow price falls on such constraints.
 - The same line under a different contingency is a separate constraint with its own shift factors, so coverage grows slowly with more history.
 - Resources are matched to nodes using ERCOT's latest public mapping file (NP4-160), not the one in force on the day being modeled. 99.9% of resources match.
-- The QP uses every estimated shift factor. For the few runs where the solver stalls, it retries with shift factors below 0.01 set to zero. Cutting them everywhere roughly doubled the error i.e., small shift factors carry real signal in aggregate.
+- The QP uses every estimated shift factor. For the few runs where the solver stalls, it retries with shift factors below 0.01 set to zero. Cutting them everywhere roughly doubled the error: small shift factors carry real signal in aggregate.
+
+Known gaps:
+- Energy only. Post-RTC+B SCED co-optimizes AS; holding SCED's AS awards fixed moved λ by $0.01 on the first interval.
+- Transmission - covers only constraints that bound in the prior 14 days, and is given ERCOT's binding set and flows (see Congestion).
+- No unit commitment - offline and quick-start units are never started.
+- Runs that hit the 20 s limit are recorded as failed (ok = False), not solved.
+- Daylight-saving: the fall-back repeated hour is matched using ERCOT's RepeatedHourFlag; spring-forward unverified until the daily run reaches mid-March.
 
 Notes: Degenerate λ at supply-curve steps - when load lands exactly on a step, any λ between the adjacent offers clears. The original LP returned the upper end (50 of [20, 50]); the segment QP returns the lower (20). Solver/formulation artifact, not a market rule.
 
-Daily run: a scheduled GitHub workflow re-clears the newest disclosed day (about 61 days back) and appends a summary row to results/daily.csv.
+Daily run: a scheduled GitHub workflow re-clears the newest disclosed day (about 61 days back), with and without the network, and appends a summary row to results/daily.csv.
 
-Teaching: the repo is also intended as a worked example for teaching optimization and applied ML on real market data. Built so far - LP and QP, from a two-unit toy dispatch with hand-checkable duals, through offer-curve segments as a convex QP, to clearing real ERCOT intervals; the known-answer tests are the worked examples. Planned - supervised learning on the validation results (regressing λ error on congestion, load, renewables and hour, with a date-based train/test split).
+Teaching: the repo is also intended as a worked example for teaching optimization and applied ML on real market data. Built so far - LP and QP, from a two-unit toy dispatch with hand-checkable duals, through offer-curve segments as a convex QP, to clearing real ERCOT intervals; then least-squares recovery of shift factors from public prices, with out-of-sample tests and a tuned rolling window. The known-answer tests are the worked examples. Planned - supervised learning on the validation results (regressing λ error on congestion, load, renewables and hour, with a date-based train/test split).
