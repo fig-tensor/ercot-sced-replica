@@ -2,7 +2,7 @@
 
 Re-clears ERCOT's real-time market from public data. When no transmission constraint binds, the median error against ERCOT's published price is one cent (80% of runs within $0.85). With transmission constraints estimated from public prices, the congested-run median error drops from -$2 to -$6 to within $0.50 on ordinary days.
 
-![ERCOT system lambda vs replica, 2026-09-08](docs/lambda_2026-09-08.png)
+![ERCOT system lambda vs replica with and without the network, 2026-09-15](docs/lambda_network_2026-09-15.png)
 
 
 Status: clearing of every SCED run in a day from real 60-day data, offer curves solved as a convex QP (HiGHS), with transmission constraints from estimated shift factors. A scheduled daily run validates the newest disclosed day with and without the network; running record in results/daily.csv.
