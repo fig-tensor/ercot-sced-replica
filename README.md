@@ -43,6 +43,8 @@ Median λ error on congested runs, without and with the network:
 | 2026-09-20 | -$4.36 | -$0.09 |
 | 2026-09-21 | -$2.58 | -$0.23 |
 
+![ERCOT system lambda vs replica with and without the network, 2026-09-15](docs/lambda_network_2026-09-15.png)
+
 On ordinary days the bias is gone. 2026-09-16 is the exception: most of its congestion was on lines that hadn't bound in the prior two weeks, so there were no estimates for them. The regression test predicted this before the replica ran. Out of sample, it explained 97% of the congestion pattern on the median day, and only 16% on 2026-09-16.
 
 The daily run now solves each day both ways and records both in `results/daily.csv`.
