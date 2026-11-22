@@ -1,6 +1,11 @@
 import os
 
+import numpy as np
 import pandas as pd
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import brier_score_loss, roc_auc_score
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
 
 from scedrep.fetch import retry
 
@@ -138,3 +143,75 @@ def dataset(api, start, end, cache="data"):
     # A constraint with no column on some day didn't bind that day: fill with 0
     Y = pd.concat(ys).reindex(X.index).fillna(0).astype(int)
     return X, Y
+
+def model_features(X):
+    """Turn the raw feature table into model inputs: hour on a circle, weekend flag, no month."""
+    F = X.drop(columns=["hour", "month", "weekday"])
+    F["hour_sin"] = np.sin(2 * np.pi * X["hour"] / 24)   # 23:00 sits next to 00:00
+    F["hour_cos"] = np.cos(2 * np.pi * X["hour"] / 24)
+    F["weekend"] = (X["weekday"] >= 5).astype(int)
+    return F
+
+
+def recent_rate(Y, days=14, lag=2):
+    """Baseline: share of hours each constraint bound over `days` full days ending `lag` days before.
+
+    With lag=2, day D uses days D-15 ... D-2: the last full days known at 9 AM on D-1.
+    Returns a table shaped like Y (NaN where there isn't enough history yet).
+    """
+    day_sum = Y.resample("D").sum()
+    day_hours = Y.iloc[:, 0].resample("D").count()
+    rate = day_sum.rolling(days).sum().shift(lag).div(day_hours.rolling(days).sum().shift(lag), axis=0)
+    out = rate.reindex(Y.index.floor("D"))
+    out.index = Y.index
+    return out
+
+
+def walk_forward(X, Y, start, end, train_weeks=8, min_freq=0.05, C=0.01):
+    """Weekly walk-forward test of the binding classifier against two baselines.
+
+    For each test week: train on the `train_weeks` weeks before it (ending one day before, since
+    labels for D-1 aren't known at the cutoff), pick targets binding in >= min_freq of training
+    hours, fit one L2-penalized logistic regression per target, predict the week.
+    Returns one row per (hour, constraint) with the outcome y and three predictions:
+    "recent" (14-day rate), "persist" (same hour two days earlier) and "model".
+    """
+    F = model_features(X)
+    recent = recent_rate(Y)
+    persist = Y.copy()
+    persist.index = persist.index + pd.Timedelta(hours=48)
+    persist = persist.reindex(Y.index)
+
+    out = []
+    for s in pd.date_range(start, end, freq="7D", tz=TZ):
+        e = s + pd.Timedelta(days=7)
+        tr = (Y.index >= s - pd.Timedelta(weeks=train_weeks)) & (Y.index < s - pd.Timedelta(days=1))
+        te = (Y.index >= s) & (Y.index < e)
+        if te.sum() == 0:
+            continue
+        freq = Y[tr].mean()
+        for c in freq[freq >= min_freq].index:
+            y_tr, y_te = Y.loc[tr, c], Y.loc[te, c]
+            r = recent.loc[te, c].fillna(freq[c])
+            if y_tr.nunique() == 2:
+                model = make_pipeline(StandardScaler(), LogisticRegression(C=C, max_iter=2000))
+                model.fit(F[tr], y_tr)
+                p = model.predict_proba(F[te])[:, 1]
+            else:
+                p = r.to_numpy()   # nothing to learn from a constant label: fall back to the recent rate
+            out.append(pd.DataFrame({
+                "week": s, "constraint": c, "y": y_te.to_numpy(), "recent": r.to_numpy(),
+                "persist": persist.loc[te, c].fillna(0).to_numpy(), "model": p,
+            }, index=y_te.index))
+    return pd.concat(out)
+
+
+def score(R, methods=("recent", "persist", "model")):
+    """Brier score, skill against the recent rate, and mean per-constraint AUC for each method."""
+    ref = brier_score_loss(R["y"], R["recent"])
+    rows = {}
+    for m in methods:
+        b = brier_score_loss(R["y"], R[m])
+        aucs = [roc_auc_score(g["y"], g[m]) for _, g in R.groupby("constraint") if g["y"].nunique() == 2]
+        rows[m] = {"brier": b, "skill": 1 - b / ref, "auc": float(np.mean(aucs))}
+    return pd.DataFrame(rows).T

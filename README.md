@@ -56,6 +56,29 @@ What this does and doesn't show:
 - Resources are matched to nodes using ERCOT's latest public mapping file (NP4-160), not the one in force on the day being modeled. 99.9% of resources match.
 - The QP uses every estimated shift factor. For the few runs where the solver stalls, it retries with shift factors below 0.01 set to zero. Cutting them everywhere roughly doubled the error: small shift factors carry real signal in aggregate.
 
+## Day-ahead congestion forecast (in progress)
+
+Predicts, the day before, which transmission constraints will bind in each hour. Inputs are ERCOT's public day-ahead forecasts (wind and solar by region, load by weather zone, generation outages by zone), using only what was published by 9 AM the previous day.
+
+Walk-forward test over 16 weeks (2026-08-01 to 2026-11-20), retrained weekly on the prior 8 weeks, one model per frequently binding constraint:
+
+| Method | Brier | Skill vs recent rate | AUC |
+|---|---|---|---|
+| Recent 14-day binding rate | 0.0648 | 0 | 0.54 |
+| Same hour two days earlier | 0.0922 | -0.42 | 0.60 |
+| Logistic regression (L2, C = 0.01) | 0.0524 | +0.19 | 0.88 |
+
+Skill is the reduction in Brier score (mean squared error of the predicted probabilities) against the recent binding rate. AUC is the chance a binding hour is ranked above a non-binding one.
+
+The drivers it finds make physical sense. A sparse (lasso) version of the model picks Coastal wind as the main driver for two Rio Grande Valley constraints (NELRIO and WESLCO_HIDLBRG_1), and solar for daytime constraints.
+
+Limits:
+- The penalty C was chosen by comparing values on the test weeks; skill is flat for C between 0.003 and 0.03, so the effect is small.
+- Transmission outages are not among the inputs. One frequent constraint (6437__F) is not predicted better than its recent rate.
+- Constraints change with the season; summer's frequent constraints mostly stopped binding in the fall, which is why the model is retrained weekly.
+
+Next: predicted line loading from the estimated shift factors as an input.
+
 Known gaps:
 - Energy only. Post-RTC+B SCED co-optimizes AS; holding SCED's AS awards fixed moved λ by $0.01 on the first interval.
 - Transmission - covers only constraints that bound in the prior 14 days, and is given ERCOT's binding set and flows (see Congestion).

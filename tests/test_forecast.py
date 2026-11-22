@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -9,7 +10,10 @@ from scedrep.forecast import (
     WIND,
     build_features,
     hourly_binding,
+    recent_rate,
+    score,
     snapshot,
+    walk_forward,
 )
 
 
@@ -127,3 +131,35 @@ def test_build_features_fills_missing_outage_hour():
     X = build_features(wind, solar, load, outage, "2026-09-15")
 
     assert X["outage West"].tolist() == [7.0, 7.0]
+
+def test_recent_rate():
+    # One constraint, 24 hours a day for 20 days; it binds every hour on day 0 only
+    idx = pd.date_range("2026-09-01", periods=20 * 24, freq="h", tz="US/Central")
+    Y = pd.DataFrame({"A | K": 0}, index=idx)
+    Y.loc[idx < ts("2026-09-02"), "A | K"] = 1
+
+    r = recent_rate(Y)
+
+    # Day 15 (Sept 16) uses days 0-13 (Sept 1-14): 24 binding hours of 14 * 24
+    assert r.loc[ts("2026-09-16 05:00"), "A | K"] == pytest.approx(24 / (14 * 24))
+    # Day 16 (Sept 17) uses days 1-14: day 0 has dropped out
+    assert r.loc[ts("2026-09-17 05:00"), "A | K"] == 0
+    # Not enough history yet on day 10
+    assert np.isnan(r.loc[ts("2026-09-11 05:00"), "A | K"])
+
+
+def test_walk_forward_learns_a_planted_signal():
+    # Synthetic hours June-Nov: constraint A binds when feature "wind WEST" is high
+    rng = np.random.default_rng(0)
+    idx = pd.date_range("2026-06-01", "2026-11-20 23:00", freq="h", tz="US/Central")
+    X = pd.DataFrame({"wind WEST": rng.normal(size=len(idx)), "load Coast": rng.normal(size=len(idx))}, index=idx)
+    X["hour"], X["weekday"], X["month"] = idx.hour, idx.dayofweek, idx.month
+    Y = pd.DataFrame({"A | K": (X["wind WEST"] + 0.3 * rng.normal(size=len(idx)) > 1.0).astype(int)}, index=idx)
+
+    R = walk_forward(X, Y, "2026-08-01", "2026-11-20")
+    S = score(R)
+
+    # The model should clearly beat the recent rate, and rank hours far better than chance
+    assert S.loc["model", "skill"] > 0.3
+    assert S.loc["model", "auc"] > 0.9
+    assert S.loc["recent", "skill"] == 0
