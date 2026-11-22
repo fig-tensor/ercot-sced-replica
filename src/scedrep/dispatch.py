@@ -4,7 +4,7 @@ import pyomo.environ as pyo
 from pyomo.contrib.solver.solvers.highs import Highs
 
 
-def solve_interval(units, load, penalty, tee=False):
+def solve_interval(units, load, penalty, network=(), tee=False):
 
     segs = {}
     for u in units:
@@ -43,13 +43,19 @@ def solve_interval(units, load, penalty, tee=False):
     )
     # balance: sum of p[u] + s == load
     m.balance = pyo.Constraint(expr=sum(m.p[u] for u in m.names) + m.s == load)
+    # Network: for each constraint c, sum_u SF[c,u] * p[u] <= rhs[c] + v[c], with v[c] >= 0 priced at penalty[c]
+    m.C = pyo.Set(initialize=range(len(network)))
+    m.v = pyo.Var(m.C, within=pyo.NonNegativeReals)
+    m.flow = pyo.Constraint(
+        m.C,
+        rule=lambda m, c: sum(sf * m.p[u] for u, sf in network[c]["sf"].items() if u in units)
+        <= network[c]["rhs"] + m.v[c],
+    )
     # objective: sum over (u,k) of price*x + 0.5*slope*x**2, plus penalty*s
     m.cost = pyo.Objective(
-        expr=sum(
-            segs[u, k][1] * m.x[u, k] + 0.5 * segs[u, k][2] * m.x[u, k] ** 2
-            for (u, k) in m.S
-        )
-        + penalty * m.s,
+        expr=sum(segs[u, k][1] * m.x[u, k] + 0.5 * segs[u, k][2] * m.x[u, k] ** 2 for (u, k) in m.S)
+        + penalty * m.s
+        + sum(network[c]["penalty"] * m.v[c] for c in m.C),
         sense=pyo.minimize,
     )
     # solve and get duals
@@ -68,4 +74,6 @@ def solve_interval(units, load, penalty, tee=False):
         "dispatch": {u: pyo.value(m.p[u]) for u in m.names},
         "lambda": duals[m.balance],
         "shortage": pyo.value(m.s),
+        "mu": [-duals[m.flow[c]] for c in m.C],
+        "violation": [pyo.value(m.v[c]) for c in m.C],
     }

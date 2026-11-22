@@ -32,6 +32,35 @@ Known gaps:
 - Runs that hit the 20 s limit are recorded as failed (ok = False), not solved.
 - Daylight-saving: the fall-back repeated hour is matched using ERCOT's RepeatedHourFlag; spring-forward unverified until the daily run reaches mid-March.
 
+## Congestion
+
+Earlier versions left out transmission limits. When a line is full, cheap power can't reach load, so ERCOT dispatches more expensive units and prices rise. A model without the network misses this and comes out too low on congested runs.
+
+ERCOT posts shift factors (how much each unit's output loads each line) only to the MIS Secure Area, which requires market-participant credentials, so this project estimates them from public data. In each SCED run, a node's price is LMP = λ − Σ SF·μ, summed over the binding constraints. Regressing node prices on ERCOT's published shadow prices μ over the previous 14 days recovers the shift factors. The replica then adds one constraint per binding line, anchored at ERCOT's flow, with ERCOT's shadow-price cap as the penalty for overloading it.
+
+Median λ error on congested runs, without and with the network:
+
+| Date | Without | With |
+|---|---|---|
+| Sept 15, 2026 | −$6.01 | −$0.02 |
+| Sept 16, 2026 | −$19.62 | −$18.59 |
+| Sept 17, 2026 | −$10.32 | −$4.41 |
+| Sept 18, 2026 | −$2.18 | −$0.49 |
+| Sept 19, 2026 | −$2.70 | −$0.15 |
+| Sept 20, 2026 | −$4.36 | −$0.09 |
+| Sept 21, 2026 | −$2.58 | −$0.23 |
+
+On ordinary days the bias is gone. Sept 16 is the exception: most of its congestion was on lines that hadn't bound in the prior two weeks, so there were no estimates for them. The regression test predicted this before the replica ran. Out of sample, it explained 97% of the congestion pattern on the median day, and only 16% on Sept 16.
+
+The daily run now solves each day both ways and records both in `results/daily.csv`.
+
+What this does and doesn't show:
+- The replica is told which constraints bind and their flows, the same way it's told the load. It reproduces ERCOT's clearing given the network state ERCOT saw. It does not predict congestion.
+- A constraint that didn't bind in the 14-day training window has no estimate. On an average day, about a quarter of the shadow price falls on such constraints.
+- The same line under a different contingency is a separate constraint with its own shift factors, so coverage grows slowly with more history.
+- Resources are matched to nodes using ERCOT's latest public mapping file (NP4-160), not the one in force on the day being modeled. 99.9% of resources match.
+- The QP uses every estimated shift factor. For the few runs where the solver stalls, it retries with shift factors below 0.01 set to zero. Cutting them everywhere roughly doubled the error i.e., small shift factors carry real signal in aggregate.
+
 Notes: Degenerate λ at supply-curve steps - when load lands exactly on a step, any λ between the adjacent offers clears. The original LP returned the upper end (50 of [20, 50]); the segment QP returns the lower (20). Solver/formulation artifact, not a market rule.
 
 Daily run: a scheduled GitHub workflow re-clears the newest disclosed day (about 61 days back) and appends a summary row to results/daily.csv.

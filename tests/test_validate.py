@@ -1,7 +1,7 @@
 import pandas as pd
 from pytest import approx
 
-from scedrep.validate import compare_day
+from scedrep.validate import compare_day, run_day
 
 
 def test_compare_day():
@@ -51,3 +51,37 @@ def test_compare_day_repeated_hour():
     cmp = compare_day(res, lam, sp)
 
     assert list(cmp["err"]) == approx([60.0 - 59.98138, 50.0 - 49.33632])
+
+def test_run_day_with_network():
+    # One SCED run, two units: A cheap ($20), B expensive ($50); ERCOT dispatched A=60, B=40
+    ts = pd.Timestamp("2026-09-08 00:00:15", tz="US/Central")
+    gen = pd.DataFrame({
+        "SCED Timestamp": [ts, ts],
+        "Resource Name": ["A", "B"],
+        "Telemetered Resource Status": ["ON", "ON"],
+        "SCED2 Offer Curve": [[(0, 20), (150, 20)], [(0, 50), (100, 50)]],
+        "LDL": [0, 0],
+        "HDL": [150, 100],
+        "Base Point": [60.0, 40.0],
+    })
+
+    # A line carries A's output and binds at 60 MW in ERCOT's solution
+    node = pd.Series({"A": "N1", "B": "N2"})
+    SF = pd.DataFrame({"N1": [1.0], "N2": [0.0]}, index=["L1 | K1"])
+    sp = pd.DataFrame({
+        "SCED Timestamp": [ts],
+        "Constraint Name": ["L1"],
+        "Contingency Name": ["K1"],
+        "Shadow Price": [30.0],
+        "Limit": [60.0],
+        "Value": [60.0],
+        "Max Shadow Price": [1000.0],
+    })
+
+    # Without the network, A takes all the load and sets lambda = 20
+    assert run_day(gen)["model_lambda"].iloc[0] == approx(20, abs=1e-3)
+
+    # With the network, A is held at 60, B is marginal, lambda = 50
+    res = run_day(gen, net=(node, SF, sp))
+    assert res["model_lambda"].iloc[0] == approx(50, abs=1e-3)
+    assert res["n_network"].iloc[0] == 1
