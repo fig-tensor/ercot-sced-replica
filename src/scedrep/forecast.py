@@ -1,6 +1,16 @@
+import os
+
 import pandas as pd
 
+from scedrep.fetch import retry
+
 TZ = "US/Central"
+
+# ERCOT's region and zone names as they appear in the column headers
+WIND = ["PANHANDLE", "COASTAL", "SOUTH", "WEST", "NORTH"]
+SOLAR = ["CenterWest", "NorthWest", "FarWest", "FarEast", "SouthEast", "CenterEast"]
+LOAD = ["Coast", "East", "Far West", "North", "North Central", "South Central", "Southern", "West"]
+OUTAGE = ["South", "North", "West", "Houston"]
 
 
 def snapshot(df, target, cutoff_hour=9):
@@ -24,3 +34,49 @@ def snapshot(df, target, cutoff_hour=9):
     # That report's rows for the target day
     rows = df[(df["Publish Time"] == pub) & (df["Interval Start"] >= start) & (df["Interval Start"] < end)]
     return rows.sort_values("Interval Start").reset_index(drop=True)
+
+
+def build_features(wind, solar, load, outage, target, cutoff_hour=9):
+    """One row per hour of `target`: ERCOT's day-ahead forecasts as known at the cutoff."""
+    w = snapshot(wind, target, cutoff_hour).set_index("Interval Start")
+    s = snapshot(solar, target, cutoff_hour).set_index("Interval Start")
+    # Load: only the forecast model ERCOT itself was using
+    ld = snapshot(load[load["In Use Flag"]], target, cutoff_hour).set_index("Interval Start")
+    o = snapshot(outage, target, cutoff_hour).set_index("Interval Start")
+
+    X = pd.DataFrame(index=w.index)
+    for r in WIND:
+        X[f"wind {r}"] = w[f"STWPF {r}"]                              # ERCOT's main wind forecast
+        X[f"wind spread {r}"] = w[f"STWPF {r}"] - w[f"WGRPP {r}"]     # its uncertainty band
+    for r in SOLAR:
+        X[f"solar {r}"] = s[f"STPPF {r}"]
+        X[f"solar spread {r}"] = s[f"STPPF {r}"] - s[f"PVGRPP {r}"]
+    for z in LOAD:
+        X[f"load {z}"] = ld[z]
+    for z in OUTAGE:
+        X[f"outage {z}"] = o[f"Total Resource MW Zone {z}"]          # MW of generation out
+
+    # Calendar: hour of day, day of week, month (local time)
+    X["hour"] = X.index.hour
+    X["weekday"] = X.index.dayofweek
+    X["month"] = X.index.month
+    return X
+
+
+def day_features(api, target, cache="data", cutoff_hour=9):
+    """Feature table for one target day, downloaded once and cached in data/."""
+    path = os.path.join(cache, f"features_{target}.pkl")
+    if os.path.exists(path):
+        return pd.read_pickle(path)
+
+    # Every report published on the day before the target; snapshot then keeps the one at the cutoff
+    d1 = (pd.Timestamp(target) - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+    wind = retry(api.get_wind_actual_and_forecast_by_geographical_region_hourly, d1)
+    solar = retry(api.get_solar_actual_and_forecast_by_geographical_region_hourly, d1)
+    load = retry(api.get_load_forecast_by_model, d1)
+    outage = retry(api.get_hourly_resource_outage_capacity, d1)
+
+    X = build_features(wind, solar, load, outage, target, cutoff_hour)
+    os.makedirs(cache, exist_ok=True)
+    X.to_pickle(path)
+    return X
