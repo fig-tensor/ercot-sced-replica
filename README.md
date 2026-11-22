@@ -1,6 +1,8 @@
 # ercot-sced-replica
 
-Re-clears ERCOT's real-time market from public data. When no transmission constraint binds, the median error against ERCOT's published price is one cent (80% of runs within $0.85). With transmission constraints estimated from public prices, the congested-run median error drops from -$2 to -$6 to within $0.50 on ordinary days.
+[![ci](https://github.com/fig-tensor/ercot-sced-replica/actions/workflows/ci.yml/badge.svg)](https://github.com/fig-tensor/ercot-sced-replica/actions/workflows/ci.yml) [![release](https://img.shields.io/github/v/release/fig-tensor/ercot-sced-replica)](https://github.com/fig-tensor/ercot-sced-replica/releases) [![license](https://img.shields.io/github/license/fig-tensor/ercot-sced-replica)](LICENSE)
+
+An open, validated nodal model of ERCOT's real-time market, built from public data. When no transmission constraint binds, the median error against ERCOT's published price is one cent (80% of runs within $0.85). With transmission constraints estimated from public prices, the congested-run median error drops from -$2 to -$6 to within $0.50 on ordinary days.
 
 ![ERCOT system lambda vs replica with and without the network, 2026-09-15](docs/lambda_network_2026-09-15.png)
 
