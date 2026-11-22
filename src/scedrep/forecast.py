@@ -80,3 +80,37 @@ def day_features(api, target, cache="data", cutoff_hour=9):
     os.makedirs(cache, exist_ok=True)
     X.to_pickle(path)
     return X
+
+def hourly_binding(sp, hours):
+    """1 if constraint c bound in at least one SCED run during hour t, else 0.
+
+    sp:    one day's SCED shadow prices (gridstatus get_shadow_prices_sced).
+    hours: the hours to cover (the feature table's index), time-zone aware.
+    Returns hours x constraints ("element | contingency"), entries 0 or 1.
+    """
+    # Binding constraints only, keyed the same way as the shift-factor work
+    b = sp[sp["Shadow Price"] > 0]
+    key = b["Constraint Name"] + " | " + b["Contingency Name"]
+
+    # Hour each SCED run falls in; flooring in UTC is safe because Central's offsets are whole hours
+    hour = b["SCED Timestamp"].dt.tz_convert("UTC").dt.floor("h").dt.tz_convert(TZ)
+
+    # Count binding runs per (hour, constraint), then cap at 1: "bound at least once"
+    y = pd.crosstab(hour, key).clip(upper=1)
+    y.index.name, y.columns.name = None, None
+
+    # Every hour of the day, with 0 where nothing bound
+    return y.reindex(hours, fill_value=0)
+
+
+def day_targets(api, target, hours, cache="data"):
+    """Binding table for one target day, downloaded once and cached in data/."""
+    path = os.path.join(cache, f"targets_{target}.pkl")
+    if os.path.exists(path):
+        return pd.read_pickle(path)
+
+    sp = retry(api.get_shadow_prices_sced, target)
+    y = hourly_binding(sp, hours)
+    os.makedirs(cache, exist_ok=True)
+    y.to_pickle(path)
+    return y

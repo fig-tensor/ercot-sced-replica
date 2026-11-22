@@ -1,7 +1,15 @@
 import pandas as pd
 import pytest
 
-from scedrep.forecast import LOAD, OUTAGE, SOLAR, WIND, build_features, snapshot
+from scedrep.forecast import (
+    LOAD,
+    OUTAGE,
+    SOLAR,
+    WIND,
+    build_features,
+    hourly_binding,
+    snapshot,
+)
 
 
 def ts(s):
@@ -66,3 +74,20 @@ def test_build_features():
     assert X["load Far West"].tolist() == [1.0, 1.0]
     assert X["outage Houston"].tolist() == [1.0, 1.0]
     assert X["hour"].tolist() == [0, 1]
+
+def test_hourly_binding():
+    # A binds twice in hour 0; C binds once in hour 1; B has a zero shadow price (not binding)
+    sp = pd.DataFrame({
+        "SCED Timestamp": [ts("2026-09-15 00:05"), ts("2026-09-15 00:10"), ts("2026-09-15 01:05"), ts("2026-09-15 01:30")],
+        "Constraint Name": ["A", "A", "C", "B"],
+        "Contingency Name": ["K", "K", "K", "K"],
+        "Shadow Price": [12.0, 8.0, 3.0, 0.0],
+    })
+    hours = pd.DatetimeIndex([ts("2026-09-15 00:00"), ts("2026-09-15 01:00"), ts("2026-09-15 02:00")])
+
+    y = hourly_binding(sp, hours)
+
+    assert sorted(y.columns) == ["A | K", "C | K"]     # B never bound
+    assert y["A | K"].tolist() == [1, 0, 0]            # two runs in hour 0 still count as 1
+    assert y["C | K"].tolist() == [0, 1, 0]
+    assert list(y.index) == list(hours)                # hour 2: no binding, still present
