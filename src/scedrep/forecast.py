@@ -55,7 +55,10 @@ def build_features(wind, solar, load, outage, target, cutoff_hour=9):
         X[f"load {z}"] = ld[z]
     for z in OUTAGE:
         X[f"outage {z}"] = o[f"Total Resource MW Zone {z}"]          # MW of generation out
-
+    # The outage report has no row for the repeated hour on the fall-back DST day; outages
+    # change slowly, so a missing hour takes the previous hour's value
+    out_cols = [f"outage {z}" for z in OUTAGE]
+    X[out_cols] = X[out_cols].ffill().bfill()
     # Calendar: hour of day, day of week, month (local time)
     X["hour"] = X.index.hour
     X["weekday"] = X.index.dayofweek

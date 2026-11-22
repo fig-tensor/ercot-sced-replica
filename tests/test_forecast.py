@@ -115,3 +115,15 @@ def test_dataset_stacks_days_and_skips_bad_ones(monkeypatch):
     assert list(Y.index) == list(X.index)
     assert Y["A | K"].tolist() == [1, 0, 0, 0]      # A absent on day 2: filled with 0
     assert Y["B | K"].tolist() == [0, 0, 0, 1]
+
+def test_build_features_fills_missing_outage_hour():
+    # The outage report lacks hour 1 (as on the fall-back DST day): it takes hour 0's value
+    wind = report("2026-09-14 08:00", [f"{k} {r}" for r in WIND for k in ("STWPF", "WGRPP")], 1)
+    solar = report("2026-09-14 08:00", [f"{k} {r}" for r in SOLAR for k in ("STPPF", "PVGRPP")], 1)
+    load = report("2026-09-14 08:00", LOAD, 1)
+    load["In Use Flag"] = True
+    outage = report("2026-09-14 08:00", [f"Total Resource MW Zone {z}" for z in OUTAGE], 7).iloc[:1]
+
+    X = build_features(wind, solar, load, outage, "2026-09-15")
+
+    assert X["outage West"].tolist() == [7.0, 7.0]
