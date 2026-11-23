@@ -1,5 +1,6 @@
 import os
 
+import gridstatus
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
@@ -238,3 +239,36 @@ def score(R, methods=("recent", "persist", "model")):
         aucs = [roc_auc_score(g["y"], g[m]) for _, g in R.groupby("constraint") if g["y"].nunique() == 2]
         rows[m] = {"brier": b, "skill": 1 - b / ref, "auc": float(np.mean(aucs))}
     return pd.DataFrame(rows).T
+
+def dam_spread(spp, lam, types=("Resource Node", "Trading Hub", "Load Zone")):
+    """Day-ahead congestion component per hour and location: DAM price minus DAM system lambda.
+
+    spp:  day-ahead settlement point prices (ErcotAPI.get_spp_day_ahead_hourly), with "Interval Start".
+    lam:  DAM system lambda with "Interval Start" and "SystemLambda" (np4-523-cd, parsed by gridstatus).
+    types: which settlement point types to keep.
+    Returns hours x locations, the day-ahead counterpart of LMP_n - lambda.
+    """
+    s = spp[spp["Location Type"].isin(types)]
+    s = s.merge(lam[["Interval Start", "SystemLambda"]], on="Interval Start")
+    s = s.assign(spread=s["SPP"] - s["SystemLambda"])
+    out = s.pivot_table(index="Interval Start", columns="Location", values="spread")
+    out.index.name, out.columns.name = None, None
+    return out
+
+
+def get_dam_spread(api, date, cache="data"):
+    """One delivery day's DAM congestion components, downloaded once and cached as data/dam_{date}.pkl."""
+    path = os.path.join(cache, f"dam_{date}.pkl")
+    if os.path.exists(path):
+        return pd.read_pickle(path)
+
+    # DAM system lambda for the delivery day; gridstatus's parser turns DeliveryDate, HourEnding and
+    # DSTFlag into "Interval Start", the same way it does for the DAM prices, so the hours line up
+    lam = retry(api.hit_ercot_api, "/np4-523-cd/dam_system_lambda", deliveryDateFrom=date, deliveryDateTo=date)
+    lam = gridstatus.Ercot().parse_doc(lam)
+    spp = retry(api.get_spp_day_ahead_hourly, pd.Timestamp(date, tz=TZ))
+
+    D = dam_spread(spp, lam)
+    os.makedirs(cache, exist_ok=True)
+    D.to_pickle(path)
+    return D
