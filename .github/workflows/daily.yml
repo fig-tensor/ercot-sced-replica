@@ -24,6 +24,9 @@ jobs:
           ERCOT_API_PASSWORD: ${{ secrets.ERCOT_API_PASSWORD }}
           ERCOT_PUBLIC_API_SUBSCRIPTION_KEY: ${{ secrets.ERCOT_PUBLIC_API_SUBSCRIPTION_KEY }}
         run: uv run scedrep "$(date -u -d '61 days ago' +%Y-%m-%d)"
+      - name: Save today's unplanned outage report
+        continue-on-error: true
+        run: uv run python -c "from scedrep.fetch import save_unplanned_outages; save_unplanned_outages('$(TZ=America/Chicago date +%Y-%m-%d)')"
       - name: Commit results
         run: |
           git config user.name "github-actions[bot]"
