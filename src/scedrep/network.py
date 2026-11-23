@@ -79,3 +79,30 @@ def build_network(bp, node, SF, sp_run, sf_min=0.0):
         network.append({"sf": sf[sf != 0].to_dict(), "rhs": rhs, "penalty": float(r["Max Shadow Price"])})
 
     return network
+
+def unit_capacity(gen, node, types=("WIND", "PVGR")):
+    """Type, node and capacity of each unit of the given types, from one day of 60-day SCED data.
+
+    gen:  the day's sced_gen_resource table.
+    node: resource node of each unit (Series: unit -> node), from unit_nodes.
+    Capacity is the unit's highest HSL that day (MW). Units with no known node are dropped.
+    """
+    g = gen[gen["Resource Type"].isin(types)]
+    units = g.groupby("Resource Name").agg(type=("Resource Type", "first"), capacity=("HSL", "max"))
+    units["node"] = node.reindex(units.index).to_numpy()
+    return units.dropna(subset=["node"])
+
+
+def type_sensitivity(SF, units):
+    """Flow change on each constraint per MW of each unit type, with output spread by capacity.
+
+    s[c, k] = sum over units u of type k of SF[c, n(u)] * cap_u / (sum of cap_u over type k).
+    Units whose node has no shift-factor estimate count as 0.
+    Returns constraints x types.
+    """
+    out = {}
+    for k, g in units.groupby("type"):
+        w = g["capacity"] / g["capacity"].sum()             # each unit's share of the type's capacity
+        S = SF.reindex(columns=g["node"]).fillna(0.0)       # SF[c, n(u)] for each unit, in unit order
+        out[k] = S.to_numpy() @ w.to_numpy()                # capacity-weighted average shift factor
+    return pd.DataFrame(out, index=SF.index)

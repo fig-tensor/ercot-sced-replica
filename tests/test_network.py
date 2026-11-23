@@ -1,10 +1,13 @@
 import numpy as np
 import pandas as pd
+import pytest
 
 from scedrep.network import (
     build_network,
     congestion_matrices,
     fit_shift_factors,
+    type_sensitivity,
+    unit_capacity,
     unit_nodes,
 )
 
@@ -103,3 +106,35 @@ def test_build_network_drops_tiny_shift_factors():
     # B is gone, and rhs uses the same (cut) shift factors, so ERCOT's dispatch stays feasible
     assert net[0]["sf"] == {"A": 1.0}
     assert net[0]["rhs"] == 60.0
+
+def test_unit_capacity():
+    # Two SCED runs; W1's HSL varies (capacity = the max), G1 is gas (excluded), W2 has no node (dropped)
+    gen = pd.DataFrame({
+        "Resource Name": ["W1", "W1", "S1", "G1", "W2"],
+        "Resource Type": ["WIND", "WIND", "PVGR", "CCGT90", "WIND"],
+        "HSL": [80.0, 100.0, 50.0, 500.0, 30.0],
+    })
+    node = pd.Series({"W1": "N1", "S1": "N2", "G1": "N3"})
+
+    units = unit_capacity(gen, node)
+
+    assert sorted(units.index) == ["S1", "W1"]
+    assert units.loc["W1", "capacity"] == 100.0
+    assert units.loc["W1", "node"] == "N1"
+    assert units.loc["S1", "type"] == "PVGR"
+
+
+def test_type_sensitivity():
+    # One constraint: SF 1.0 at N1, 0.2 at N2; N9 has no estimate
+    SF = pd.DataFrame({"N1": [1.0], "N2": [0.2]}, index=["L1 | K1"])
+    units = pd.DataFrame({
+        "type": ["WIND", "WIND", "WIND", "PVGR"],
+        "capacity": [100.0, 300.0, 100.0, 50.0],
+        "node": ["N1", "N2", "N9", "N1"],
+    }, index=["W1", "W2", "W3", "S1"])
+
+    s = type_sensitivity(SF, units)
+
+    # Wind: (1.0 * 100 + 0.2 * 300 + 0 * 100) / 500 = 0.32; solar: all at N1, so 1.0
+    assert s.loc["L1 | K1", "WIND"] == pytest.approx(0.32)
+    assert s.loc["L1 | K1", "PVGR"] == pytest.approx(1.0)
