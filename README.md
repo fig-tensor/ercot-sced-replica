@@ -77,7 +77,9 @@ Limits:
 - Transmission outages are not among the inputs. One frequent constraint (6437__F) is not predicted better than its recent rate.
 - Constraints change with the season; summer's frequent constraints mostly stopped binding in the fall, which is why the model is retrained weekly.
 
-Next: predicted line loading from the estimated shift factors as an input.
+Adding predicted line loading from the estimated shift factors (wind and solar forecasts weighted by each constraint's shift factors) does not help on frequent constraints: it is a linear combination of inputs the model already has, and the model learns that direction from the binding history.
+
+On rare constraints (binding in 1-5% of hours), a 3-feature model using the predicted loading matched or beat the full 37-feature model (+0.02 skill; 95% bootstrap range -0.001 to +0.045). Not established yet.
 
 Known gaps:
 - Energy only. Post-RTC+B SCED co-optimizes AS; holding SCED's AS awards fixed moved λ by $0.01 on the first interval.
