@@ -29,10 +29,12 @@ def fit_shift_factors(Ys, Ms):
     # the model is Y = -M @ SF, so SF = -B
     return pd.DataFrame(-B, index=M.columns, columns=Y.columns)
 
-def congestion_matrices(lmp, lam, sp):
+def congestion_matrices(lmp, lam, sp, types=("Resource Node",)):
     # build one day's regression matrices.
     # Resource nodes only; hubs and load zones are averages over many buses
-    lmp = lmp[lmp["Location Type"] == "Resource Node"]
+    # Which settlement points to keep, by gridstatus "Location Type": resource nodes by default;
+    # ("Trading Hub", "Load Zone") gives the hubs and load zones (each an average over many buses)
+    lmp = lmp[lmp["Location Type"].isin(types)]
     # Congestion component of each node in each run: LMP_n - lambda
     lmp = lmp.merge(lam[["SCED Timestamp", "lam"]], on="SCED Timestamp")
     lmp = lmp.assign(cong=lmp["LMP"] - lmp["lam"])
@@ -52,6 +54,7 @@ def build_network(bp, node, SF, sp_run, sf_min=0.0):
     node:   resource node of each unit (Series: unit -> node), from unit_nodes.
     SF:     estimated shift factors (constraints x nodes), from fit_shift_factors.
     sp_run: this run's rows of the SCED shadow-price table.
+    types: which settlement point types to keep (gridstatus "Location Type" values).
     sf_min: shift factors with |SF| below this are set to 0 (regression noise).
     Returns a list of {"sf": {unit: SF}, "rhs": float, "penalty": float}.
     """
