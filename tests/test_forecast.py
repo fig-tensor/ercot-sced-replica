@@ -10,6 +10,7 @@ from scedrep.forecast import (
     WIND,
     build_features,
     hourly_binding,
+    loading,
     recent_rate,
     score,
     snapshot,
@@ -163,3 +164,37 @@ def test_walk_forward_learns_a_planted_signal():
     assert S.loc["model", "skill"] > 0.3
     assert S.loc["model", "auc"] > 0.9
     assert S.loc["recent", "skill"] == 0
+
+def test_loading():
+    # Two hours; total wind = 100 + 200 per region pattern, total solar = 50 per region
+    hours = pd.DatetimeIndex([ts("2026-09-15 00:00"), ts("2026-09-15 01:00")])
+    X = pd.DataFrame(index=hours)
+    for r in WIND:
+        X[f"wind {r}"] = [100.0, 200.0]
+    for r in SOLAR:
+        X[f"solar {r}"] = [0.0, 50.0]
+
+    f = loading(X, pd.Series({"WIND": 0.1, "PVGR": -0.2}))
+
+    # Hour 0: 0.1 * 500 - 0.2 * 0 = 50; hour 1: 0.1 * 1000 - 0.2 * 300 = 40
+    assert f.tolist() == pytest.approx([50.0, 40.0])
+
+
+def test_walk_forward_with_sensitivities_runs():
+    # Same synthetic setup as above, plus regional wind/solar columns and sensitivities for every week
+    rng = np.random.default_rng(1)
+    idx = pd.date_range("2026-06-01", "2026-11-20 23:00", freq="h", tz="US/Central")
+    X = pd.DataFrame(index=idx)
+    for r in WIND:
+        X[f"wind {r}"] = rng.normal(size=len(idx))
+    for r in SOLAR:
+        X[f"solar {r}"] = rng.normal(size=len(idx))
+    X["hour"], X["weekday"], X["month"] = idx.hour, idx.dayofweek, idx.month
+    Y = pd.DataFrame({"A | K": (X["wind WEST"] > 1.0).astype(int)}, index=idx)
+    weeks = pd.date_range("2026-08-01", "2026-11-20", freq="7D", tz="US/Central")
+    sens = {s: pd.DataFrame({"WIND": [0.5], "PVGR": [0.0]}, index=["A | K"]) for s in weeks}
+
+    R = walk_forward(X, Y, "2026-08-01", "2026-11-20", sens=sens)
+
+    assert len(R) == ((idx >= weeks[0]) & (idx < weeks[-1] + pd.Timedelta(days=7))).sum()
+    assert score(R).loc["model", "auc"] > 0.9

@@ -144,6 +144,10 @@ def dataset(api, start, end, cache="data"):
     Y = pd.concat(ys).reindex(X.index).fillna(0).astype(int)
     return X, Y
 
+def shift_days(t, days):
+    """Move a local timestamp by whole calendar days (midnight stays midnight across DST changes)."""
+    return (t.tz_localize(None) + pd.Timedelta(days=days)).tz_localize(TZ)
+
 def model_features(X):
     """Turn the raw feature table into model inputs: hour on a circle, weekend flag, no month."""
     F = X.drop(columns=["hour", "month", "weekday"])
@@ -151,6 +155,16 @@ def model_features(X):
     F["hour_cos"] = np.cos(2 * np.pi * X["hour"] / 24)
     F["weekend"] = (X["weekday"] >= 5).astype(int)
     return F
+
+def loading(X, sens_c):
+    """Predicted flow change on one constraint each hour: s_wind * total wind + s_solar * total solar.
+
+    X:      raw feature table (regional wind and solar forecasts).
+    sens_c: that constraint's type sensitivities (from network.type_sensitivity), e.g. {"WIND": 0.3, "PVGR": -0.1}.
+    """
+    wind = X[[f"wind {r}" for r in WIND]].sum(axis=1)       # ERCOT's systemwide wind forecast, MW
+    solar = X[[f"solar {r}" for r in SOLAR]].sum(axis=1)    # systemwide solar forecast, MW
+    return sens_c.get("WIND", 0.0) * wind + sens_c.get("PVGR", 0.0) * solar
 
 
 def recent_rate(Y, days=14, lag=2):
@@ -167,7 +181,7 @@ def recent_rate(Y, days=14, lag=2):
     return out
 
 
-def walk_forward(X, Y, start, end, train_weeks=8, min_freq=0.05, C=0.01):
+def walk_forward(X, Y, start, end, train_weeks=8, min_freq=0.05, C=0.01, sens=None):
     """Weekly walk-forward test of the binding classifier against two baselines.
 
     For each test week: train on the `train_weeks` weeks before it (ending one day before, since
@@ -175,6 +189,8 @@ def walk_forward(X, Y, start, end, train_weeks=8, min_freq=0.05, C=0.01):
     hours, fit one L2-penalized logistic regression per target, predict the week.
     Returns one row per (hour, constraint) with the outcome y and three predictions:
     "recent" (14-day rate), "persist" (same hour two days earlier) and "model".
+    sens: optional {test-week start: type sensitivities (constraints x types)}. If given, each
+    constraint's model also gets its predicted loading (see `loading`) as a feature.
     """
     F = model_features(X)
     recent = recent_rate(Y)
@@ -184,8 +200,9 @@ def walk_forward(X, Y, start, end, train_weeks=8, min_freq=0.05, C=0.01):
 
     out = []
     for s in pd.date_range(start, end, freq="7D", tz=TZ):
-        e = s + pd.Timedelta(days=7)
-        tr = (Y.index >= s - pd.Timedelta(weeks=train_weeks)) & (Y.index < s - pd.Timedelta(days=1))
+        # Calendar-day arithmetic in local time, so weeks that cross a DST change keep every hour
+        e = shift_days(s, 7)
+        tr = (Y.index >= shift_days(s, -7 * train_weeks)) & (Y.index < shift_days(s, -1))
         te = (Y.index >= s) & (Y.index < e)
         if te.sum() == 0:
             continue
@@ -193,10 +210,16 @@ def walk_forward(X, Y, start, end, train_weeks=8, min_freq=0.05, C=0.01):
         for c in freq[freq >= min_freq].index:
             y_tr, y_te = Y.loc[tr, c], Y.loc[te, c]
             r = recent.loc[te, c].fillna(freq[c])
+            Ftr, Fte = F[tr], F[te]
+            if sens is not None:
+                # This constraint's predicted loading; 0 if it had no shift-factor estimate that week
+                s_c = sens[s].loc[c] if c in sens[s].index else pd.Series(dtype=float)
+                f = loading(X, s_c)
+                Ftr, Fte = Ftr.assign(loading=f[tr]), Fte.assign(loading=f[te])
             if y_tr.nunique() == 2:
                 model = make_pipeline(StandardScaler(), LogisticRegression(C=C, max_iter=2000))
-                model.fit(F[tr], y_tr)
-                p = model.predict_proba(F[te])[:, 1]
+                model.fit(Ftr, y_tr)
+                p = model.predict_proba(Fte)[:, 1]
             else:
                 p = r.to_numpy()   # nothing to learn from a constant label: fall back to the recent rate
             out.append(pd.DataFrame({
