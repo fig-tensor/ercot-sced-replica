@@ -1,6 +1,7 @@
 import os
 import time
 
+import gridstatus
 import pandas as pd
 
 from scedrep.network import congestion_matrices
@@ -80,3 +81,18 @@ def get_congestion(api, date, cache="data"):
     os.makedirs(cache, exist_ok=True)
     pd.to_pickle((Y, M), path)
     return Y, M
+
+def save_unplanned_outages(publish_date, out_dir="results/outages"):
+    """Save ERCOT's unplanned resource outage report published on `publish_date`, one CSV per report.
+
+    ERCOT keeps only about 31 days of these on its website and they are not in the public API,
+    so the daily run saves each one to build up history. Each report lists every unplanned
+    outage open about three days before its publish date.
+    """
+    path = os.path.join(out_dir, f"{publish_date}.csv")
+    if os.path.exists(path):
+        return path
+    df = gridstatus.Ercot().get_unplanned_resource_outages(pd.Timestamp(publish_date, tz="US/Central"))
+    os.makedirs(out_dir, exist_ok=True)
+    df.to_csv(path, index=False)
+    return path
