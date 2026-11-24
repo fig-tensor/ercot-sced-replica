@@ -1,6 +1,6 @@
 [project]
 name = "scedrep"
-version = "0.4.0"                       # matches the latest release tag
+version = "0.5.0"                       # matches the latest release tag
 description = "Open, validated nodal model of ERCOT real-time SCED, built from public data"
 readme = "README.md"
 license = "MIT"                         # SPDX expression; shows on GitHub and any package index
