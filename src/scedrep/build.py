@@ -1,5 +1,7 @@
 import pandas as pd
 
+DT = 5 / 60  # SCED interval length in hours
+
 
 def build_interval(gen, ts, esr=None):
     """Model inputs for one SCED run: dispatchable units and the load they must meet.
@@ -9,7 +11,12 @@ def build_interval(gen, ts, esr=None):
     """
     rows = gen[gen["SCED Timestamp"] == ts]
     if esr is not None:
-        rows = pd.concat([rows, esr[esr["SCED Timestamp"] == ts]])
+        b = esr[esr["SCED Timestamp"] == ts].copy()
+        # ERCOT's LDL/HDL ignore state of charge, so cap them by stored energy:
+        # MW limit = MWh of room / interval length in hours.
+        b["LDL"] = b["LDL"].clip(lower=-(b["Max SOC"] - b["SOC"]) / DT)   # can't charge past Max SOC
+        b["HDL"] = b["HDL"].clip(upper=(b["SOC"] - b["Min SOC"]) / DT)    # can't discharge below Min SOC
+        rows = pd.concat([rows, b])
     # keep only online units in dispatchable set
     rows = rows[rows["Telemetered Resource Status"].astype(str).str.startswith("ON")]
     # keep only dispatchable rows: HDL > LDL only if its range is meaningful
