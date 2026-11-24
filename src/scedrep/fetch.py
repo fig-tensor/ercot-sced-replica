@@ -61,10 +61,14 @@ def lambda_timestamps(lam):
     return lam
 
 
-def get_congestion(api, date, cache="data"):
-    """One day's congestion matrices Y and M, downloaded once and cached in data/."""
+def get_congestion(api, date, cache="data", types=("Resource Node",), prefix="ym"):
+    """One day's congestion matrices Y and M, downloaded once and cached as data/{prefix}_{date}.pkl.
+
+    types: which settlement points go in Y (default resource nodes). For hubs and load zones use
+    types=("Trading Hub", "Load Zone") with a different prefix, e.g. "hz", so the caches stay separate.
+    """
     # Reuse the cached matrices if this day was built before
-    path = os.path.join(cache, f"ym_{date}.pkl")
+    path = os.path.join(cache, f"{prefix}_{date}.pkl")
     if os.path.exists(path):
         return pd.read_pickle(path)
 
@@ -77,7 +81,7 @@ def get_congestion(api, date, cache="data"):
     sp = retry(api.get_shadow_prices_sced, date)
 
     # Build the matrices and save them for next time
-    Y, M = congestion_matrices(lmp, lam, sp)
+    Y, M = congestion_matrices(lmp, lam, sp, types)
     os.makedirs(cache, exist_ok=True)
     pd.to_pickle((Y, M), path)
     return Y, M

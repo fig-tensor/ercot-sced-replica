@@ -104,6 +104,17 @@ Adding predicted line loading from the estimated shift factors (wind and solar f
 
 On rare constraints (binding in 1-5% of hours), a 3-feature model using the predicted loading matched or beat the full 37-feature model (+0.02 skill; 95% bootstrap range -0.001 to +0.045). Not established yet.
 
+Congestion spreads (LMP - λ), day ahead: the dollar size of real-time spreads is not forecastable from day-ahead public information beyond a few percent; even ERCOT's day-ahead market does no better than predicting zero on absolute error at the hubs. Whether a spread event happens is forecastable. For an hourly spread below -$10 (a discount) or above +$10 (a premium), walk-forward over 10 weeks (2026-09-12 to 2026-11-20):
+
+| Locations | Event | Skill vs recent rate | Model AUC | Day-ahead market AUC |
+|---|---|---|---|---|
+| Hubs and load zones | Discount | +0.10 | 0.72 | 0.62 |
+| Hubs and load zones | Premium | +0.15 | 0.74 | 0.79 |
+| Resource nodes | Discount | +0.14 | 0.73 | 0.69 |
+| Resource nodes | Premium | +0.15 | 0.71 | 0.80 |
+
+The 9 AM model ranks discount hours better than ERCOT's day-ahead prices, which clear hours later; the day-ahead market is better on premiums. The day-ahead price is scored only as a ranking (it is not a probability). The hub comparison rests on 15 locations and has not been tested for significance.
+
 Limits:
 - The penalty C was chosen by comparing values on the test weeks; skill is flat for C between 0.003 and 0.03, so the effect is small.
 - Transmission outages are not among the inputs: ERCOT's transmission outage report is not public. One frequent constraint (6437__F) is not predicted better than its recent rate, and outages are the likely reason. ERCOT's unit-level unplanned generation outage reports are public but kept online for only 31 days, so they are now saved daily to `results/outages/` to build history for an outage feature.

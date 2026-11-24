@@ -138,3 +138,21 @@ def test_type_sensitivity():
     # Wind: (1.0 * 100 + 0.2 * 300 + 0 * 100) / 500 = 0.32; solar: all at N1, so 1.0
     assert s.loc["L1 | K1", "WIND"] == pytest.approx(0.32)
     assert s.loc["L1 | K1", "PVGR"] == pytest.approx(1.0)
+
+def test_congestion_matrices_hubs():
+    # Same inputs as a resource-node table, but asking for the hub instead
+    ts = pd.to_datetime(["2026-09-08 00:00:15"]).tz_localize("US/Central")
+    lam = pd.DataFrame({"SCED Timestamp": ts, "lam": [30.0]})
+    lmp = pd.DataFrame({
+        "SCED Timestamp": [ts[0], ts[0]],
+        "Location": ["N1", "HB_HOUSTON"],
+        "Location Type": ["Resource Node", "Trading Hub"],
+        "LMP": [25.0, 29.0],
+    })
+    sp = pd.DataFrame({"SCED Timestamp": ts, "Constraint Name": ["L1"], "Contingency Name": ["K1"], "Shadow Price": [4.0]})
+
+    Y, M = congestion_matrices(lmp, lam, sp, types=("Trading Hub", "Load Zone"))
+
+    assert list(Y.columns) == ["HB_HOUSTON"]       # resource node dropped, hub kept
+    assert Y.iloc[0, 0] == -1.0                     # 29 - 30
+    assert M.iloc[0, 0] == 4.0

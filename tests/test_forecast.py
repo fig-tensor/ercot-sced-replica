@@ -9,6 +9,7 @@ from scedrep.forecast import (
     SOLAR,
     WIND,
     build_features,
+    dam_spread,
     hourly_binding,
     loading,
     recent_rate,
@@ -198,3 +199,20 @@ def test_walk_forward_with_sensitivities_runs():
 
     assert len(R) == ((idx >= weeks[0]) & (idx < weeks[-1] + pd.Timedelta(days=7))).sum()
     assert score(R).loc["model", "auc"] > 0.9
+
+def test_dam_spread():
+    # Two hours, a node and a hub; lambda 30 then 40
+    h = [ts("2026-09-15 00:00"), ts("2026-09-15 01:00")]
+    spp = pd.DataFrame({
+        "Interval Start": [h[0], h[0], h[1], h[1]],
+        "Location": ["N1", "HB_HOUSTON", "N1", "HB_HOUSTON"],
+        "Location Type": ["Resource Node", "Trading Hub", "Resource Node", "Trading Hub"],
+        "SPP": [25.0, 31.0, 45.0, 40.0],
+    })
+    lam = pd.DataFrame({"Interval Start": h, "SystemLambda": [30.0, 40.0]})
+
+    D = dam_spread(spp, lam)
+
+    assert D.loc[h[0], "N1"] == -5.0          # 25 - 30
+    assert D.loc[h[0], "HB_HOUSTON"] == 1.0   # 31 - 30
+    assert D.loc[h[1], "N1"] == 5.0           # 45 - 40
