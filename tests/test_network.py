@@ -156,3 +156,4 @@ def test_congestion_matrices_hubs():
     assert list(Y.columns) == ["HB_HOUSTON"]       # resource node dropped, hub kept
     assert Y.iloc[0, 0] == -1.0                     # 29 - 30
     assert M.iloc[0, 0] == 4.0
+

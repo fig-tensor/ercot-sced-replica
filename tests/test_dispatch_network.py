@@ -36,3 +36,32 @@ def test_penalty_caps_shadow_price():
 
     # LMP at A = lambda - mu * SF_A = 20, so lambda = 30
     assert out["lambda"] == approx(30, abs=1e-3)
+
+# A battery: charges (negative MW) when the price is at or below $10, discharges when at or above $40
+ESR = {"curve": [(-50, 10), (0, 10), (0, 40), (50, 40)], "ldl": -50, "hdl": 50}
+
+
+def test_battery_charges_when_energy_is_cheap():
+    # Gas at $5 with plenty of room: the battery charges fully, and gas serves load plus charging
+    units = {"A": {"curve": [(0, 5), (200, 5)], "ldl": 0, "hdl": 200}, "E": ESR}
+    out = solve_interval(units, 100, 5000)
+    assert out["dispatch"]["E"] == approx(-50, abs=1e-3)
+    assert out["dispatch"]["A"] == approx(150, abs=1e-3)
+    assert out["lambda"] == approx(5, abs=1e-3)
+
+
+def test_battery_idle_between_its_prices():
+    # Gas at $20: above the battery's $10 bid, below its $40 offer, so it does nothing
+    units = {"A": {"curve": [(0, 20), (200, 20)], "ldl": 0, "hdl": 200}, "E": ESR}
+    out = solve_interval(units, 100, 5000)
+    assert out["dispatch"]["E"] == approx(0, abs=1e-3)
+    assert out["lambda"] == approx(20, abs=1e-3)
+
+
+def test_battery_discharges_when_energy_is_expensive():
+    # Gas at $50: the battery's $40 offer is cheaper, so it discharges fully
+    units = {"A": {"curve": [(0, 50), (200, 50)], "ldl": 0, "hdl": 200}, "E": ESR}
+    out = solve_interval(units, 100, 5000)
+    assert out["dispatch"]["E"] == approx(50, abs=1e-3)
+    assert out["dispatch"]["A"] == approx(50, abs=1e-3)
+    assert out["lambda"] == approx(50, abs=1e-3)
