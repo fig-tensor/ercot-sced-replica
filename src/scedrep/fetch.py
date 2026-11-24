@@ -100,3 +100,72 @@ def save_unplanned_outages(publish_date, out_dir="results/outages"):
     os.makedirs(out_dir, exist_ok=True)
     df.to_csv(path, index=False)
     return path
+
+def get_as_prices(api, date, cache="data"):
+    """ERCOT's real-time ancillary-service prices (MCPC, $/MW per hour) for every SCED run on date.
+
+    One row per SCED run and product (ECRS, NSPIN, REGDN, REGUP, RRS). Source: product NP6-332-CD in the
+    public API archive. ERCOT's website keeps these only about a week, and gridstatus's list of API
+    endpoints predates them, so the archive is read directly. Cached as data/mcpc_{date}.pkl.
+    """
+    path = os.path.join(cache, f"mcpc_{date}.pkl")
+    if os.path.exists(path):
+        return pd.read_pickle(path)
+
+    # Each run's prices are posted seconds after the run, so postings from midnight to the next
+    # midnight cover the day (calendar dates, so a 23- or 25-hour DST day is handled)
+    tz = "US/Central"
+    nxt = (pd.Timestamp(date) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+    # The text after the product ID is a placeholder: the archive lookup reads only the ID
+    df = retry(api.get_historical_data, "/np6-332-cd/x", pd.Timestamp(date, tz=tz), pd.Timestamp(nxt, tz=tz))
+
+    # Time-zone-aware run times (handles the repeated fall-back hour), keep only this date's runs
+    df = lambda_timestamps(df)
+    df = df[df["SCED Timestamp"].dt.strftime("%Y-%m-%d") == date]
+    out = df[["SCED Timestamp", "ASType"]].assign(
+        mcpc=pd.to_numeric(df["CappedMCPC"], errors="coerce"),
+        mcpc_uncapped=pd.to_numeric(df["UncappedMCPC"], errors="coerce"),
+    ).reset_index(drop=True)
+
+    os.makedirs(cache, exist_ok=True)
+    out.to_pickle(path)
+    return out
+
+
+def get_as_demand_curves(api, date, cache="data"):
+    """ERCOT's ancillary-service demand curves used by SCED on date: one curve per hour and product.
+
+    Each curve is a list of points (MW, $/MW per hour). Source: product NP4-212-CD in the public API
+    archive (website keeps about a month). Curves seen so far post around 04:55 on the delivery day;
+    if a curve is posted more than once, the latest posting is kept. Cached as data/asdc_{date}.pkl.
+    """
+    path = os.path.join(cache, f"asdc_{date}.pkl")
+    if os.path.exists(path):
+        return pd.read_pickle(path)
+
+    # Look at postings from the day before through the day itself, in case some arrive a day early
+    tz = "US/Central"
+    prev = (pd.Timestamp(date) - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+    nxt = (pd.Timestamp(date) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+    df = retry(api.get_historical_data, "/np4-212-cd/x", pd.Timestamp(prev, tz=tz), pd.Timestamp(nxt, tz=tz),
+               add_post_datetime=True)
+
+    # Keep this delivery date only, and the latest posting of each (hour, product) curve
+    df = df[pd.to_datetime(df["DeliveryDate"]).dt.strftime("%Y-%m-%d") == date].copy()
+    df["postDatetime"] = pd.to_datetime(df["postDatetime"])
+    key = ["HourEnding", "RepeatedHourFlag", "ASType"]
+    df = df[df["postDatetime"] == df.groupby(key)["postDatetime"].transform("max")]
+
+    # One row per curve; points sorted by MW
+    df = df.sort_values(key + ["DemandCurvePoint"])
+    curves = (
+        df.groupby(key)
+        .apply(lambda g: list(zip(g["Quantity"].astype(float), g["Price"].astype(float), strict=True)),
+               include_groups=False)
+        .rename("curve")
+        .reset_index()
+    )
+
+    os.makedirs(cache, exist_ok=True)
+    curves.to_pickle(path)
+    return curves
