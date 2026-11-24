@@ -1,6 +1,15 @@
-def build_interval(gen, ts):
-    # keep only rows for this SCED timestamp
+import pandas as pd
+
+
+def build_interval(gen, ts, esr=None):
+    """Model inputs for one SCED run: dispatchable units and the load they must meet.
+
+    gen: 60-day SCED generator table. esr: optional 60-day SCED battery (ESR) table; if given,
+    online batteries are dispatchable too, from LDL (charging, negative MW) to HDL (discharging).
+    """
     rows = gen[gen["SCED Timestamp"] == ts]
+    if esr is not None:
+        rows = pd.concat([rows, esr[esr["SCED Timestamp"] == ts]])
     # keep only online units in dispatchable set
     rows = rows[rows["Telemetered Resource Status"].astype(str).str.startswith("ON")]
     # keep only dispatchable rows: HDL > LDL only if its range is meaningful

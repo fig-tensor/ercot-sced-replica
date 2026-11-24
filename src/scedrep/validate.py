@@ -7,12 +7,12 @@ from scedrep.fetch import lambda_timestamps
 from scedrep.network import build_network
 
 
-def run_day(gen, penalty=5000, net=None):
-    """Solve every SCED run in gen. net = (node, SF, sp) adds network constraints."""
+def run_day(gen, penalty=5000, net=None, esr=None):
+    """Solve every SCED run in gen. net = (node, SF, sp) adds network constraints; esr makes batteries dispatchable."""
     rows = []
     for ts in sorted(gen["SCED Timestamp"].unique()):
         print(f"{ts}", flush=True)
-        units, load = build_interval(gen, ts)
+        units, load = build_interval(gen, ts, esr)
         row = {"SCED Timestamp": ts, "ok": False}
 
         # Without a network: one attempt. With one: all shift factors first, and if the

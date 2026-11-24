@@ -37,10 +37,9 @@ def solve_interval(units, load, penalty, network=(), tee=False):
     m.p = pyo.Var(m.names, bounds=lambda m, u: (units[u]["ldl"], units[u]["hdl"]))
     # s >= 0
     m.s = pyo.Var(within=pyo.NonNegativeReals)
-    # link, one per unit: p[u] == sum of x[u,k] over that unit's segments
-    m.link = pyo.Constraint(
-        m.names, rule=lambda m, u: m.p[u] == sum(m.x[v, k] for (v, k) in m.S if v == u)
-    )
+    # link, one per unit: p[u] == curve start + sum of x[u,k] over that unit's segments.
+    # Generator curves start at 0 MW; battery curves start at LDL (charging, negative MW)
+    m.link = pyo.Constraint(m.names, rule=lambda m, u: m.p[u] == units[u]["curve"][0][0] + sum(m.x[v, k] for (v, k) in m.S if v == u))
     # balance: sum of p[u] + s == load
     m.balance = pyo.Constraint(expr=sum(m.p[u] for u in m.names) + m.s == load)
     # Network: for each constraint c, sum_u SF[c,u] * p[u] <= rhs[c] + v[c], with v[c] >= 0 priced at penalty[c]
