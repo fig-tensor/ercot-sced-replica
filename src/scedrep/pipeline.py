@@ -9,10 +9,15 @@ from scedrep.network import fit_shift_factors, unit_nodes
 from scedrep.validate import compare_day, run_day
 
 WINDOW = 14  # days of history for the shift-factor fit
+TZ = "US/Central"
 
 
 def fit_network(api, ercot, date, gen):
-    """Unit -> node map and shift factors fitted on the WINDOW days before date."""
+    """Unit -> node map and shift factors fitted on the WINDOW days before date.
+
+    gen: any table with a "Resource Name" column; pass generators and batteries together
+    so both get a node.
+    """
     # Training days: date - WINDOW ... date - 1 (cached in data/ after the first download)
     train = pd.date_range(end=pd.Timestamp(date) - pd.Timedelta(days=1), periods=WINDOW).strftime("%Y-%m-%d")
     days = [get_congestion(api, d) for d in train]
@@ -25,25 +30,39 @@ def fit_network(api, ercot, date, gen):
     return node, SF
 
 
+def evening_median(cmp):
+    """Median error over the evening net-peak hours 18-21 (18:00-21:59 Central)."""
+    # utc=True then convert: works for tz-aware timestamps and for strings read back from CSV
+    hour = pd.to_datetime(cmp["SCED Timestamp"], utc=True).dt.tz_convert(TZ).dt.hour
+    return cmp.loc[hour.between(18, 21), "err"].median()
+
+
 def run_date(date, out="results/daily.csv"):
     # skip dates already in the summary file
     if os.path.exists(out) and date in pd.read_csv(out)["date"].astype(str).values:
         print(f"{date} already in {out}, skipping")
         return None
 
-    # gen = 60-day SCED generator table for this date
+    # 60-day SCED disclosure for this date: generators and batteries (ESRs) come in one download
     ercot = gridstatus.Ercot()
-    gen = ercot.get_60_day_sced_disclosure(date, process=True)["sced_gen_resource"]
+    disc = ercot.get_60_day_sced_disclosure(date, process=True)
+    gen = disc["sced_gen_resource"]
+    esr = disc["sced_esr"]
 
     # ERCOT's system lambda and shadow prices for this date
     api = ErcotAPI()
     lam = retry(get_lambda, api, date)
     sp = retry(api.get_shadow_prices_sced, date)
 
-    # solve every SCED run twice: without and with network constraints
+    # solve every SCED run three times:
+    #   cmp  - no network, batteries fixed at base points (original baseline)
+    #   net  - network, batteries fixed
+    #   both - network, batteries dispatchable
+    # The first two stay unchanged so daily.csv history stays comparable.
     cmp = compare_day(run_day(gen), lam, sp)
-    node, SF = fit_network(api, ercot, date, gen)
+    node, SF = fit_network(api, ercot, date, pd.concat([gen, esr]))  # nodes for units and batteries
     net = compare_day(run_day(gen, net=(node, SF, sp)), lam, sp)
+    both = compare_day(run_day(gen, net=(node, SF, sp), esr=esr), lam, sp)
 
     # one-row summary for this date
     summary = pd.DataFrame([{
@@ -54,6 +73,10 @@ def run_date(date, out="results/daily.csv"):
         "med_err_congested": cmp.loc[cmp["congested"], "err"].median(),
         "solved_net": int(net["ok"].sum()),
         "med_err_congested_net": net.loc[net["congested"], "err"].median(),
+        "solved_both": int(both["ok"].sum()),
+        "med_err_uncongested_both": both.loc[~both["congested"], "err"].median(),
+        "med_err_congested_both": both.loc[both["congested"], "err"].median(),
+        "med_err_evening_both": evening_median(both),
     }])
 
     # add to the summary file; rewrite it whole so older rows get the new columns (blank)
@@ -63,9 +86,8 @@ def run_date(date, out="results/daily.csv"):
     summary.to_csv(out, index=False)
 
     # per-run detail, one file per day, for each model
-    os.makedirs("results/runs", exist_ok=True)
-    os.makedirs("results/runs_net", exist_ok=True)
-    cmp.to_csv(f"results/runs/{date}.csv", index=False)
-    net.to_csv(f"results/runs_net/{date}.csv", index=False)
+    for folder, df in [("results/runs", cmp), ("results/runs_net", net), ("results/runs_both", both)]:
+        os.makedirs(folder, exist_ok=True)
+        df.to_csv(f"{folder}/{date}.csv", index=False)
 
     return cmp
