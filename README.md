@@ -8,7 +8,7 @@ An open, validated nodal model of ERCOT's real-time market, built from public da
 
 ## Status
 
-Clearing of every SCED run in a day from real 60-day data, offer curves solved as a convex QP (HiGHS), with transmission constraints from estimated shift factors. A scheduled daily run validates the newest disclosed day with and without the network; running record in `results/daily.csv`. A day-ahead forecasting layer predicts binding constraints from ERCOT's public forecasts. ERCOT's unplanned generation outage reports are collected daily for a future outage feature.
+Clearing of every SCED run in a day from real 60-day data, offer curves solved as a convex QP (HiGHS), with transmission constraints from estimated shift factors. Batteries (ESRs) clear as dispatchable resources, within state-of-charge limits. A scheduled daily run validates the newest disclosed day with and without the network; running record in `results/daily.csv`. A day-ahead forecasting layer predicts binding constraints from ERCOT's public forecasts. ERCOT's unplanned generation outage reports are collected daily for a future outage feature.
 
 ## Run it
 
@@ -41,7 +41,7 @@ print(score(R))
 
 - Offer curves - SCED2 (mitigated) curves, linear between points, so cost is quadratic and the problem is a convex QP. Checked against ERCOT: hand-interpolating the marginal unit matched published λ to the cent.
 - Dispatchable set - online units only (status ON*) with HDL - LDL > 0.1 MW. Offline units (OFF, OUT, EMR) still carry live HDL/LDL in the data; leaving them in cost $13.90 on the first interval.
-- Load and fixed injections (fixed gens, ESRs) - taken at SCED base points.
+- Load and fixed injections (fixed gens) - taken at SCED base points. Batteries are dispatched by the model (see Batteries).
 - Validation target - UncappedSystemLambda. Where ERCOT's uncapped value is missing (older days), CappedSystemLambda is used instead; if the live endpoint has no data, the archive's SystemLambda (no capped/uncapped split). The two matched on every 2026-09-08 run.
 - Numerical cleaning - segments under 0.1 MW dropped, slopes outside [0.001, 1000] flattened at average price. HiGHS tolerances: primal 1e-4 MW (scale-appropriate for a ~60 GW balance), dual 1e-6 $/MWh. 20 s time limit per SCED run.
 
@@ -81,6 +81,33 @@ What this does and doesn't show:
 - The same line under a different contingency is a separate constraint with its own shift factors, so coverage grows slowly with more history.
 - Resources are matched to nodes using ERCOT's latest public mapping file (NP4-160), not the one in force on the day being modeled. 99.9% of resources match.
 - The QP uses every estimated shift factor. For the few runs where the solver stalls, it retries with shift factors below 0.01 set to zero. Cutting them everywhere roughly doubled the error: small shift factors carry real signal in aggregate.
+
+## Batteries
+
+Batteries are now a large share of evening supply in ERCOT, and they also set prices overnight when they charge. Since RTC+B, ERCOT publishes each battery as one offer curve covering both directions: charging (negative MW, down to LDL) and discharging (positive MW, up to HDL). The replica clears batteries on those curves like any other resource, so their output responds to price instead of being fixed at ERCOT's answer.
+
+State of charge needed one fix. The published LDL/HDL ignore how full a battery is: on 2026-09-21 at 04:45, four full batteries still showed full charging ability, and the model charged them about 280 MW while ERCOT charged them about 0. The replica caps each battery by its stored energy over one 5-minute interval:
+
+- charging limit: max(LDL, -(Max SOC - SOC) × 12)
+- discharging limit: min(HDL, (SOC - Min SOC) × 12)
+
+Checked against every battery in every run that day (87,360 battery-runs), ERCOT's base points fall outside these limits in 0.6% (charging) and 0.02% (discharging) of cases, mostly sub-1 MW trickle charging on full batteries.
+
+Median λ error on congested runs:
+
+| Date | Neither | Network | Batteries | Both |
+|---|---|---|---|---|
+| 2026-09-15 | -$6.01 | -$0.02 | -$4.35 | -$0.10 |
+| 2026-09-16 | -$19.62 | -$18.59 | -$7.24 | -$7.11 |
+| 2026-09-17 | -$10.32 | -$4.41 | -$4.49 | -$0.55 |
+| 2026-09-18 | -$2.18 | -$0.49 | -$0.66 | -$0.24 |
+| 2026-09-19 | -$2.70 | -$0.15 | -$2.05 | -$0.13 |
+| 2026-09-20 | -$4.36 | -$0.09 | -$1.89 | -$0.14 |
+| 2026-09-21 | -$2.58 | -$0.23 | -$1.67 | -$0.09 |
+
+A median near zero can hide errors that cancel: on 2026-09-15 and 2026-09-20, Network sits closer to zero than Both, but its median absolute error is higher (0.29 vs 0.20, 1.15 vs 0.37).
+
+The two fixes do different jobs. The network fixes congested prices; batteries fix the price level when nothing binds (median uncongested error on 2026-09-20: $6.29 without batteries, $0.40 with). They also interact: on 2026-09-17, the median evening error (hours 18-21) was -$146 with neither, -$12 with the network, -$119 with batteries, and -$2.21 with both. Batteries discharging behind a binding line only show up in λ when the model can see that line.
 
 ## Day-ahead congestion forecast
 
@@ -126,6 +153,8 @@ Limits:
 - Transmission - covers only constraints that bound in the prior 14 days, and is given ERCOT's binding set and flows (see Congestion).
 - No unit commitment - offline and quick-start units are never started.
 - Runs that hit the 20 s limit are recorded as failed (ok = False), not solved.
+- Batteries - charging efficiency is taken as 1. Where ERCOT charged past the state-of-charge limit, it did so by about 14% (median), consistent with efficiency near 0.88, but that sample only includes the overshoots, so it isn't a fitted value.
+- Batteries - on 2026-09-16, adding batteries leaves 6-10 more runs unsolved than without them; cause not yet checked.
 - Daylight-saving: the fall-back repeated hour is matched using ERCOT's RepeatedHourFlag; spring-forward unverified until the daily run reaches mid-March.
 
 ## Notes
