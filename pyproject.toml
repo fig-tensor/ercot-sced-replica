@@ -1,20 +1,31 @@
 [project]
 name = "scedrep"
-version = "0.1.0"
-description = "Add your description here"
+version = "0.4.0"                       # matches the latest release tag
+description = "Open, validated nodal model of ERCOT real-time SCED, built from public data"
 readme = "README.md"
+license = "MIT"                         # SPDX expression; shows on GitHub and any package index
+license-files = ["LICENSE"]
 authors = [
     { name = "fig-tensor", email = "353080086+fig-tensor@users.noreply.github.com" }
 ]
 requires-python = ">=3.11"
+keywords = ["ercot", "sced", "electricity markets", "lmp", "congestion", "pyomo", "optimization"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering",
+]
 dependencies = [
-    "duckdb>=2.0.0",
     "gridstatus>=0.37.0",
     "highspy>=1.15.1",
     "pandas>=2.3.3",
     "pyomo>=6.10.1",
     "scikit-learn>=1.9.1",
 ]
+
+[project.urls]
+Repository = "https://github.com/fig-tensor/ercot-sced-replica"
 
 [project.scripts]
 scedrep = "scedrep:main"
