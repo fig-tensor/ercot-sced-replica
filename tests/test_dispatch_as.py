@@ -113,6 +113,8 @@ def test_highs_options_override():
     # A caller-supplied HiGHS option reaches the solver: a 0-iteration QP limit stops it before the optimum
     units = {"A": unit(10, 100, hsl=200)}
     inp = asin([("A", 1, "REGUP", 40, 5)], {"REGUP": [(100, -1, 50)]})   # sloped demand: a real QP
-    assert solve_interval(units, 50, 5000, asin=inp, highs_options={"qp_regularization_value": 1e-6})["mcpc"]
+    # HiGHS-specific: pinned to the HiGHS backend
+    assert solve_interval(units, 50, 5000, asin=inp, backend="highs",
+                          highs_options={"qp_regularization_value": 1e-6})["mcpc"]
     with pytest.raises(Exception):  # noqa: B017 - any solver failure shows the option was applied
-        solve_interval(units, 50, 5000, asin=inp, highs_options={"qp_iteration_limit": 0})
+        solve_interval(units, 50, 5000, asin=inp, backend="highs", highs_options={"qp_iteration_limit": 0})

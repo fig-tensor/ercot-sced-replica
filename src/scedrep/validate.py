@@ -6,6 +6,7 @@ from scedrep.build import build_interval
 from scedrep.dispatch import solve_interval
 from scedrep.fetch import lambda_timestamps
 from scedrep.network import build_network
+from scedrep.qp import SolveError
 
 
 def as_summary(out, units, awards, ts):
@@ -51,7 +52,7 @@ def run_day(gen, penalty=5000, net=None, esr=None, as_inputs=None, durations=Non
                 network = build_network(bp, node, SF, sp[sp["SCED Timestamp"] == ts], sf_min)
             try:
                 out = solve_interval(units, load, penalty, network, asin=asin, durations=durations)
-            except (NoOptimalSolutionError, NoDualsError) as e:
+            except (NoOptimalSolutionError, NoDualsError, SolveError) as e:
                 row["error"] = repr(e)
                 continue
             row.update({

@@ -34,7 +34,7 @@ def test_boundary_lambda():
     result = solve_interval(units, load, penalty=5000)
 
     assert result["dispatch"]["coal"] == approx(100)
-    assert result["dispatch"]["gas"] == approx(0)
+    assert result["dispatch"]["gas"] == approx(0, abs=1e-6)  # interior-point solvers stop a hair inside bounds
     assert 20 <= result["lambda"] <= 50
 
 

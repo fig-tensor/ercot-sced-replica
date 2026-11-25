@@ -8,6 +8,64 @@ from pyomo.contrib.solver.solvers.highs import Highs
 DT = 5 / 60  # SCED interval length in hours
 UP = ("REGUP", "RRS", "ECRS", "NSPIN")  # up-products: share headroom above p
 RAMP = 5 / 7  # regulation ramp factor in the ramp rows (ERCOT training material)
+BACKEND = "highs"  # default solver for solve_interval: "highs" (Pyomo + HiGHS) or "piqp" (scedrep.qp)
+
+
+def energy_segments(units):
+    """Offer-curve segments per unit, cleaned for numerical conditioning.
+
+    Returns {(u, k): (width, price, slope)}. Segments narrower than 0.1 MW are dropped; slopes above 1000 or
+    below 1e-3 are flattened at the segment's average price. Shared by both backends, so both solve the
+    same model.
+    """
+    segs = {}
+    for u in units:
+        curve = units[u]["curve"]
+        for k, (a, b) in enumerate(itertools.pairwise(curve)):
+            # a is [q_k, price_k], b is [q_k+1, price_k+1]
+            width = b[0] - a[0]
+            if width < 0.1:
+                continue
+            slope = (b[1] - a[1]) / width
+            price = a[1]
+            if slope > 1000 or slope < 1e-3:
+                price = (a[1] + b[1]) / 2
+                slope = 0
+            segs[u, k] = (width, price, slope)
+    return segs
+
+
+def as_terms(units, asin):
+    """AS model data shared by both backends, from asbuild.build_as_interval output.
+
+    Returns a dict:
+      K         products with a demand curve this run
+      price     {(u, o, b, k): $/MW-h}   offered (unit, offer type, block, product) of dispatched units
+      Q         {(u, o, b): MW}          shared MW of each block
+      by_award  {(u, k): [price keys]}   blocks offering product k, per unit
+      by_block  {(u, o, b): [keys]}      products offered by each block
+      as_units  units that offer AS (they get capacity and ramp rows)
+      seg       {(k, i): (P, s, w)}      demand segments
+      fixed     {k: MW}                  F_k
+    """
+    demand = asin["demand"]
+    K = list(demand)
+    blk = asin["blocks"]
+    blk = blk[blk["Resource Name"].isin(units.keys()) & blk["product"].isin(K)]
+    cols = [blk["Resource Name"], blk["Offer Type"], blk["block"], blk["product"]]
+    price = {(u, o, int(b), k): float(pr) for u, o, b, k, pr in zip(*cols, blk["price"], strict=True)}
+    Q = {(u, o, int(b)): float(q) for u, o, b, q in zip(*cols[:3], blk["mw"], strict=True)}
+    by_award, by_block = defaultdict(list), defaultdict(list)
+    for key in price:
+        by_award[key[0], key[3]].append(key)
+        by_block[key[:3]].append(key)
+    as_units = sorted({key[0] for key in price})
+    for u in as_units:
+        if math.isnan(units[u]["hsl"]) or math.isnan(units[u]["lsl"]):
+            raise ValueError(f"unit {u} offers AS but has no HSL/LSL")
+    seg = {(k, i): sw for k in K for i, sw in enumerate(demand[k])}
+    return {"K": K, "price": price, "Q": Q, "by_award": by_award, "by_block": by_block,
+            "as_units": as_units, "seg": seg, "fixed": asin.get("fixed", {})}
 
 
 def _add_as(m, units, asin, durations):
@@ -19,25 +77,10 @@ def _add_as(m, units, asin, durations):
     Rows: AS balance per product (dual = MCPC), block capacity, capacity and ramp rows for units that
     offer AS, and battery duration rows if durations = {product: hours} is given.
     """
-    demand, fixed = asin["demand"], asin.get("fixed", {})
-    K = list(demand)  # products with a demand curve this run
-
-    # Offered (unit, offer type, block, product) -> price, and (unit, offer type, block) -> shared MW Q
-    blk = asin["blocks"]
-    blk = blk[blk["Resource Name"].isin(units.keys()) & blk["product"].isin(K)]
-    cols = [blk["Resource Name"], blk["Offer Type"], blk["block"], blk["product"]]
-    price = {(u, o, int(b), k): float(pr) for u, o, b, k, pr in zip(*cols, blk["price"], strict=True)}
-    Q = {(u, o, int(b)): float(q) for u, o, b, q in zip(*cols[:3], blk["mw"], strict=True)}
-
-    # Index the x keys by award (u, k) and by block (u, o, b), so each row sums only its own terms
-    by_award, by_block = defaultdict(list), defaultdict(list)
-    for key in price:
-        by_award[key[0], key[3]].append(key)
-        by_block[key[:3]].append(key)
-    as_units = sorted({key[0] for key in price})
-    for u in as_units:
-        if math.isnan(units[u]["hsl"]) or math.isnan(units[u]["lsl"]):
-            raise ValueError(f"unit {u} offers AS but has no HSL/LSL")
+    t = as_terms(units, asin)
+    K, price, Q, seg, fixed = t["K"], t["price"], t["Q"], t["seg"], t["fixed"]
+    by_award, by_block, as_units = t["by_award"], t["by_block"], t["as_units"]
+    demand = asin["demand"]
 
     m.X = pyo.Set(initialize=list(price), dimen=4)
     m.x_as = pyo.Var(m.X, within=pyo.NonNegativeReals)
@@ -51,7 +94,6 @@ def _add_as(m, units, asin, durations):
     m.block_cap = pyo.Constraint(m.BLK, rule=lambda m, u, o, b: sum(m.x_as[key] for key in by_block[u, o, b]) <= Q[u, o, b])
 
     # Demand segments (P, s, w): fill y in [0, w], worth P*y + s*y^2/2 (s <= 0: concave)
-    seg = {(k, i): sw for k in K for i, sw in enumerate(demand[k])}
     m.Y = pyo.Set(initialize=list(seg), dimen=2)
     m.y = pyo.Var(m.Y, bounds=lambda m, k, i: (0, seg[k, i][2]))
 
@@ -90,28 +132,21 @@ def _add_as(m, units, asin, durations):
     return cost - value
 
 
-def solve_interval(units, load, penalty, network=(), tee=False, asin=None, durations=None, highs_options=None):
+def solve_interval(units, load, penalty, network=(), tee=False, asin=None, durations=None, highs_options=None,
+                   backend=None):
     """One SCED run. asin (from asbuild.build_as_interval) adds AS co-optimization; durations
     ({product: hours}) adds battery duration rows. Without asin the model is energy only.
+    backend: "highs" (Pyomo + HiGHS) or "piqp" (scedrep.qp); None uses the module setting BACKEND.
     highs_options: HiGHS settings that override the defaults below (e.g. qp_regularization_value)."""
-    segs = {}
-    for u in units:
-        curve = units[u]["curve"]
-        for k, (a, b) in enumerate(itertools.pairwise(curve)):
-            # a is [q_k, price_k], b is [q_k+1, price_k+1]
-            # width = (b's MW) - (a's MW)
-            width = b[0] - a[0]
-            # if width == 0: skip this pair
-            if width < 0.1:
-                continue
-            # slope = (b's price - a's price) / width
-            slope = (b[1] - a[1]) / width
-            price = a[1]
-            if slope > 1000 or slope < 1e-3:
-                price = (a[1] + b[1]) / 2
-                slope = 0
-            # segs[u, k] = (width, a's price, slope)
-            segs[u, k] = (width, price, slope)
+    backend = backend or BACKEND
+    if backend == "piqp":
+        # imported here, not at the top: qp imports from this module
+        from scedrep.qp import solve_interval_piqp
+        return solve_interval_piqp(units, load, penalty, network, verbose=tee, asin=asin, durations=durations)
+    if backend != "highs":
+        raise ValueError(f"unknown backend {backend!r}")
+
+    segs = energy_segments(units)
 
         # make an empty model
     m = pyo.ConcreteModel()
