@@ -3,6 +3,11 @@ import time
 
 import gridstatus
 import pandas as pd
+from gridstatus.ercot_60d_utils import (
+    process_sced_esr,
+    process_sced_gen,
+    process_sced_load,
+)
 
 from scedrep.network import congestion_matrices
 
@@ -169,3 +174,26 @@ def get_as_demand_curves(api, date, cache="data"):
     os.makedirs(cache, exist_ok=True)
     curves.to_pickle(path)
     return curves
+
+def get_sced_disclosure(date, ercot=None):
+    """60-day SCED disclosure for date, downloaded once: resource tables processed, AS offers raw.
+
+    gridstatus's processing (process=True) splits each AS offer into per-product curves and loses which
+    block a quantity came from. So download raw (process=False) and apply gridstatus's own processing to
+    the generator, battery (ESR) and Load Resource tables only. Same keys as process=True:
+    sced_gen_resource, sced_esr, sced_load_resource (processed); sced_resource_as_offers (raw, block
+    columns QUANTITY_MWn and PRICEn_<product> kept). A table missing on that date is None.
+    """
+    ercot = ercot or gridstatus.Ercot()
+    raw = ercot.get_60_day_sced_disclosure(date, process=False)
+
+    def proc(key, f):
+        """Apply gridstatus's processing function f to table key, if the table exists."""
+        return f(raw[key]) if raw.get(key) is not None else None
+
+    return {
+        "sced_gen_resource": proc("sced_gen_resource", process_sced_gen),
+        "sced_esr": proc("sced_esr", process_sced_esr),
+        "sced_load_resource": proc("sced_load_resource", process_sced_load),
+        "sced_resource_as_offers": raw.get("sced_resource_as_offers"),  # raw on purpose
+    }
