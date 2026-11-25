@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 from pytest import approx
 
@@ -35,3 +36,29 @@ def test_full_battery_cannot_charge():
     units, _ = build_interval(gen, ts, esr)
     assert units["B"]["ldl"] == 0          # full: no room to charge
     assert units["B"]["hdl"] == 50         # 100 MWh stored, so HDL (50) still binds
+
+
+
+def test_units_carry_hsl_lsl_and_soc():
+    ts = pd.Timestamp("2026-09-21 00:00:20", tz="US/Central")
+    base = {"SCED Timestamp": [ts], "Telemetered Resource Status": ["ON"], "LDL": [0.0], "HDL": [100.0],
+            "Base Point": [50.0]}
+    gen = pd.DataFrame({**base, "Resource Name": ["G"], "SCED2 Offer Curve": [[(0, 10), (100, 10)]],
+                        "HSL": [120.0], "LSL": [20.0]})
+    esr = pd.DataFrame({**base, "Resource Name": ["B"], "SCED2 Offer Curve": [[(-50, 30), (0, 30), (50, 40)]],
+                        "LDL": [-50.0], "HDL": [50.0], "HSL": [50.0], "LSL": [-50.0],
+                        "SOC": [40.0], "Min SOC": [5.0], "Max SOC": [100.0]})
+    units, _ = build_interval(gen, ts, esr)
+    assert (units["G"]["hsl"], units["G"]["lsl"]) == (120.0, 20.0)
+    assert np.isnan(units["G"]["soc"])                       # generators have no state of charge
+    assert (units["B"]["soc"], units["B"]["soc_min"], units["B"]["soc_max"]) == (40.0, 5.0, 100.0)
+    assert units["B"]["lsl"] == -50.0                        # a battery's low limit is charging
+
+
+def test_missing_limit_columns_become_nan():
+    ts = pd.Timestamp("2026-09-21 00:00:20", tz="US/Central")
+    gen = pd.DataFrame({"SCED Timestamp": [ts], "Resource Name": ["G"], "Telemetered Resource Status": ["ON"],
+                        "SCED2 Offer Curve": [[(0, 10), (100, 10)]], "LDL": [0.0], "HDL": [100.0],
+                        "Base Point": [50.0]})
+    units, _ = build_interval(gen, ts)
+    assert np.isnan(units["G"]["hsl"]) and np.isnan(units["G"]["soc_max"])

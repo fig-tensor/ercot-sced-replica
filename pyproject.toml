@@ -20,6 +20,7 @@ dependencies = [
     "gridstatus>=0.37.0",
     "highspy>=1.15.1",
     "pandas>=2.3.3",
+    "piqp>=0.8.0,<0.9",
     "pyomo>=6.10.1",
     "scikit-learn>=1.9.1",
 ]

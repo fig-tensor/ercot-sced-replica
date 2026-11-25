@@ -21,13 +21,22 @@ def build_interval(gen, ts, esr=None):
     rows = rows[rows["Telemetered Resource Status"].astype(str).str.startswith("ON")]
     # keep only dispatchable rows: HDL > LDL only if its range is meaningful
     rows = rows[rows["HDL"] - rows["LDL"] > 0.1]
-    # units = {name: {"curve": SCED2 curve, "ldl": LDL, "hdl": HDL}} for those rows
+    # Limits the AS constraints need: HSL/LSL (capacity rows) and, for batteries, state of charge.
+    # A column absent from the table (generators have no SOC; small test frames lack HSL) becomes NaN.
+    extra = {"hsl": "HSL", "lsl": "LSL", "soc": "SOC", "soc_min": "Min SOC", "soc_max": "Max SOC"}
+    for col in extra.values():
+        if col not in rows.columns:
+            rows = rows.assign(**{col: float("nan")})
+    # units = {name: {"curve": SCED2 curve, "ldl": LDL, "hdl": HDL, "bp": base point, + extra}} for those rows
     units = {
         name: {"curve": c, "ldl": lo, "hdl": hi, "bp": bp}
         for name, c, lo, hi, bp in zip(
             rows["Resource Name"], rows["SCED2 Offer Curve"], rows["LDL"], rows["HDL"], rows["Base Point"], strict=True
         )
     }
+    for key, col in extra.items():
+        for name, v in zip(rows["Resource Name"], rows[col], strict=True):
+            units[name][key] = float(v)
     # load = sum of Base Point over those rows
     load = rows["Base Point"].sum()
     # return units, load
