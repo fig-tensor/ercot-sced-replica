@@ -118,3 +118,18 @@ def test_highs_options_override():
                           highs_options={"qp_regularization_value": 1e-6})["mcpc"]
     with pytest.raises(Exception):  # noqa: B017 - any solver failure shows the option was applied
         solve_interval(units, 50, 5000, asin=inp, backend="highs", highs_options={"qp_iteration_limit": 0})
+
+
+
+def test_sustained_limit_below_dispatch_floor():
+    # ERCOT data, TIMPP_AGR2 on 2026-09-16 08:55:18: LDL 6.0 > HSL 5.1 (derate), HDL 55.8. ERCOT held it at
+    # 6.0 MW with no AS. The capacity rows use max(HSL, LDL) = 6, so A is pinned at 6 MW and gets no RegUp;
+    # B ($20) serves the rest of the load and supplies RegUp ($2, inside its block): lambda 20, MCPC 2.
+    units = {"A": unit(10, 55.8, hsl=5.1, lsl=5.1, ldl=6.0), "B": unit(20, 200)}
+    out = solve_interval(units, 100, 5000, asin=asin(
+        [("A", 1, "REGUP", 10, 1), ("B", 1, "REGUP", 20, 2)], {"REGUP": [(100, 0, 10)]}))
+    assert out["dispatch"]["A"] == approx(6, abs=1e-4)
+    assert out["awards"]["A"]["REGUP"] == approx(0, abs=1e-4)
+    assert out["awards"]["B"]["REGUP"] == approx(10, abs=1e-4)
+    assert out["lambda"] == approx(20, abs=1e-4)
+    assert out["mcpc"]["REGUP"] == approx(2, abs=1e-4)

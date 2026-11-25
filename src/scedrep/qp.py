@@ -117,8 +117,8 @@ def solve_interval_piqp(units, load, penalty, network=(), verbose=False, asin=No
             up = {}
             for k in UP:
                 up.update(award(u, k))
-            ineq.add({p: 1.0, **up}, un["hsl"])                                 # p + up-awards <= HSL
-            ineq.add({p: -1.0, **award(u, "REGDN")}, -un["lsl"])               # -p + RegDn <= -LSL
+            ineq.add({p: 1.0, **up}, t["hsl"][u])                               # p + up-awards <= HSL
+            ineq.add({p: -1.0, **award(u, "REGDN")}, -t["lsl"][u])             # -p + RegDn <= -LSL
             ineq.add({p: 1.0, **award(u, "REGUP", RAMP)}, un["hdl"])           # p + 5/7 RegUp <= HDL
             ineq.add({p: -1.0, **award(u, "REGDN", RAMP)}, -un["ldl"])         # -p + 5/7 RegDn <= -LDL
             if durations and not np.isnan(un["soc"]):                           # battery duration rows

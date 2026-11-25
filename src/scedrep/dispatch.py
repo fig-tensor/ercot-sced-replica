@@ -45,6 +45,7 @@ def as_terms(units, asin):
       by_award  {(u, k): [price keys]}   blocks offering product k, per unit
       by_block  {(u, o, b): [keys]}      products offered by each block
       as_units  units that offer AS (they get capacity and ramp rows)
+      hsl, lsl  {u: MW}                  limits for the capacity rows (see below)
       seg       {(k, i): (P, s, w)}      demand segments
       fixed     {k: MW}                  F_k
     """
@@ -63,9 +64,16 @@ def as_terms(units, asin):
     for u in as_units:
         if math.isnan(units[u]["hsl"]) or math.isnan(units[u]["lsl"]):
             raise ValueError(f"unit {u} offers AS but has no HSL/LSL")
+    # Limits for the capacity rows. ERCOT's data can have HSL below LDL (or LSL above HDL), e.g. a derate
+    # before the ramp-limited dispatch window catches up; ERCOT then holds the unit at its dispatch floor with
+    # no AS (TIMPP_AGR2, 2026-09-16 08:55:18: LDL 6.0, HSL 5.1, base point 6.0, awards 0). Using
+    # H = max(HSL, LDL) and L = min(LSL, HDL) reproduces that, and changes nothing for consistent units.
+    hsl = {u: max(units[u]["hsl"], units[u]["ldl"]) for u in as_units}
+    lsl = {u: min(units[u]["lsl"], units[u]["hdl"]) for u in as_units}
     seg = {(k, i): sw for k in K for i, sw in enumerate(demand[k])}
     return {"K": K, "price": price, "Q": Q, "by_award": by_award, "by_block": by_block,
-            "as_units": as_units, "seg": seg, "fixed": asin.get("fixed", {})}
+            "as_units": as_units, "hsl": hsl, "lsl": lsl, "seg": seg, "fixed": asin.get("fixed", {})}
+
 
 
 def _add_as(m, units, asin, durations):
@@ -80,6 +88,7 @@ def _add_as(m, units, asin, durations):
     t = as_terms(units, asin)
     K, price, Q, seg, fixed = t["K"], t["price"], t["Q"], t["seg"], t["fixed"]
     by_award, by_block, as_units = t["by_award"], t["by_block"], t["as_units"]
+    hsl, lsl = t["hsl"], t["lsl"]
     demand = asin["demand"]
 
     m.X = pyo.Set(initialize=list(price), dimen=4)
@@ -109,8 +118,8 @@ def _add_as(m, units, asin, durations):
     # Capacity and ramp rows, only for units that offer AS
     m.AU = pyo.Set(initialize=as_units)
     up = lambda u: sum(a(u, k) for k in UP)
-    m.cap_hi = pyo.Constraint(m.AU, rule=lambda m, u: m.p[u] + up(u) <= units[u]["hsl"])
-    m.cap_lo = pyo.Constraint(m.AU, rule=lambda m, u: m.p[u] - a(u, "REGDN") >= units[u]["lsl"])
+    m.cap_hi = pyo.Constraint(m.AU, rule=lambda m, u: m.p[u] + up(u) <= hsl[u])
+    m.cap_lo = pyo.Constraint(m.AU, rule=lambda m, u: m.p[u] - a(u, "REGDN") >= lsl[u])
     m.ramp_hi = pyo.Constraint(m.AU, rule=lambda m, u: m.p[u] + RAMP * a(u, "REGUP") <= units[u]["hdl"])
     m.ramp_lo = pyo.Constraint(m.AU, rule=lambda m, u: m.p[u] - RAMP * a(u, "REGDN") >= units[u]["ldl"])
 
