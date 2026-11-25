@@ -106,3 +106,13 @@ def test_as_unit_without_hsl_raises():
     units = {"A": unit(10, 100, hsl=NAN)}
     with pytest.raises(ValueError, match="HSL"):
         solve_interval(units, 50, 5000, asin=asin([("A", 1, "REGUP", 40, 5)], {"REGUP": [(100, 0, 50)]}))
+
+
+
+def test_highs_options_override():
+    # A caller-supplied HiGHS option reaches the solver: a 0-iteration QP limit stops it before the optimum
+    units = {"A": unit(10, 100, hsl=200)}
+    inp = asin([("A", 1, "REGUP", 40, 5)], {"REGUP": [(100, -1, 50)]})   # sloped demand: a real QP
+    assert solve_interval(units, 50, 5000, asin=inp, highs_options={"qp_regularization_value": 1e-6})["mcpc"]
+    with pytest.raises(Exception):  # noqa: B017 - any solver failure shows the option was applied
+        solve_interval(units, 50, 5000, asin=inp, highs_options={"qp_iteration_limit": 0})

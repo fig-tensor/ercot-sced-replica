@@ -90,10 +90,10 @@ def _add_as(m, units, asin, durations):
     return cost - value
 
 
-def solve_interval(units, load, penalty, network=(), tee=False, asin=None, durations=None):
+def solve_interval(units, load, penalty, network=(), tee=False, asin=None, durations=None, highs_options=None):
     """One SCED run. asin (from asbuild.build_as_interval) adds AS co-optimization; durations
-    ({product: hours}) adds battery duration rows. Without asin the model is energy only."""
-
+    ({product: hours}) adds battery duration rows. Without asin the model is energy only.
+    highs_options: HiGHS settings that override the defaults below (e.g. qp_regularization_value)."""
     segs = {}
     for u in units:
         curve = units[u]["curve"]
@@ -149,15 +149,13 @@ def solve_interval(units, load, penalty, network=(), tee=False, asin=None, durat
         sense=pyo.minimize,
     )
     # solve and get duals
-    results = Highs().solve(
-        m,
-        tee=tee,
-        solver_options={
-            "primal_feasibility_tolerance": 1e-4,
-            "dual_feasibility_tolerance": 1e-6,
-            "time_limit": 20,
-        },
-    )
+    options = {
+        "primal_feasibility_tolerance": 1e-4,
+        "dual_feasibility_tolerance": 1e-6,
+        "time_limit": 20,
+        **(highs_options or {}),  # caller's settings win
+    }
+    results = Highs().solve(m, tee=tee, solver_options=options)
     duals = results.solution_loader.get_duals()
 
     out = {
