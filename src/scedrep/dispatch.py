@@ -8,7 +8,7 @@ from pyomo.contrib.solver.solvers.highs import Highs
 DT = 5 / 60  # SCED interval length in hours
 UP = ("REGUP", "RRS", "ECRS", "NSPIN")  # up-products: share headroom above p
 RAMP = 5 / 7  # regulation ramp factor in the ramp rows (ERCOT training material)
-BACKEND = "highs"  # default solver for solve_interval: "highs" (Pyomo + HiGHS) or "piqp" (scedrep.qp)
+BACKEND = "piqp"  # default solver for solve_interval: "piqp" (scedrep.qp, interior point) or "highs" (Pyomo + HiGHS)
 
 
 def energy_segments(units):
