@@ -29,6 +29,7 @@ def test_run_day_with_as():
 
     row = res.iloc[0]
     assert row["ok"]
+    assert row["solver"] in {"piqp", "piqp-strict", "highs"}   # which solver produced the run is recorded
     assert row["model_lambda"] == approx(10, abs=1e-3)
     assert row["mcpc_REGUP"] == approx(10, abs=1e-3)
     assert row["cleared_REGUP"] == approx(50, abs=1e-3)

@@ -3,10 +3,9 @@ from pyomo.contrib.solver.common.util import NoDualsError, NoOptimalSolutionErro
 
 from scedrep.asbuild import PRODUCTS, build_as_interval
 from scedrep.build import build_interval
-from scedrep.dispatch import solve_interval
+from scedrep.dispatch import SolveError, solve_with_fallback
 from scedrep.fetch import lambda_timestamps
 from scedrep.network import build_network
-from scedrep.qp import SolveError
 
 
 def as_summary(out, units, awards, ts):
@@ -51,7 +50,7 @@ def run_day(gen, penalty=5000, net=None, esr=None, as_inputs=None, durations=Non
                 bp = pd.Series({u: units[u]["bp"] for u in units})
                 network = build_network(bp, node, SF, sp[sp["SCED Timestamp"] == ts], sf_min)
             try:
-                out = solve_interval(units, load, penalty, network, asin=asin, durations=durations)
+                out = solve_with_fallback(units, load, penalty, network, asin=asin, durations=durations)
             except (NoOptimalSolutionError, NoDualsError, SolveError) as e:
                 row["error"] = repr(e)
                 continue
@@ -61,6 +60,7 @@ def run_day(gen, penalty=5000, net=None, esr=None, as_inputs=None, durations=Non
                 "n_network": len(network),
                 "violation": sum(out["violation"]),
                 "sf_min": sf_min,
+                "solver": out["solver"],  # which solver in the fallback chain produced this run
                 "ok": True,
             })
             if asin is not None:

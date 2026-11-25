@@ -3,12 +3,18 @@ import math
 from collections import defaultdict
 
 import pyomo.environ as pyo
+from pyomo.contrib.solver.common.util import NoDualsError, NoOptimalSolutionError
 from pyomo.contrib.solver.solvers.highs import Highs
 
 DT = 5 / 60  # SCED interval length in hours
 UP = ("REGUP", "RRS", "ECRS", "NSPIN")  # up-products: share headroom above p
 RAMP = 5 / 7  # regulation ramp factor in the ramp rows (ERCOT training material)
 BACKEND = "piqp"  # default solver for solve_interval: "piqp" (scedrep.qp, interior point) or "highs" (Pyomo + HiGHS)
+PIQP_STRICT = {"max_iter": 1000, "eps_primal_inf": 1e-8}  # more iterations, stricter infeasibility detection
+
+
+class SolveError(RuntimeError):
+    """A solver backend did not return an optimal solution."""
 
 
 def energy_segments(units):
@@ -142,16 +148,17 @@ def _add_as(m, units, asin, durations):
 
 
 def solve_interval(units, load, penalty, network=(), tee=False, asin=None, durations=None, highs_options=None,
-                   backend=None):
+                   backend=None, piqp_settings=None):
     """One SCED run. asin (from asbuild.build_as_interval) adds AS co-optimization; durations
     ({product: hours}) adds battery duration rows. Without asin the model is energy only.
     backend: "highs" (Pyomo + HiGHS) or "piqp" (scedrep.qp); None uses the module setting BACKEND.
-    highs_options: HiGHS settings that override the defaults below (e.g. qp_regularization_value)."""
+    highs_options: HiGHS settings that override the defaults below (e.g. qp_regularization_value);
+    piqp_settings: PIQP settings (e.g. PIQP_STRICT)."""
     backend = backend or BACKEND
     if backend == "piqp":
         # imported here, not at the top: qp imports from this module
         from scedrep.qp import solve_interval_piqp
-        return solve_interval_piqp(units, load, penalty, network, verbose=tee, asin=asin, durations=durations)
+        return solve_interval_piqp(units, load, penalty, network, verbose=tee, asin=asin, durations=durations, settings=piqp_settings)
     if backend != "highs":
         raise ValueError(f"unknown backend {backend!r}")
 
@@ -215,3 +222,25 @@ def solve_interval(units, load, penalty, network=(), tee=False, asin=None, durat
         out["awards"] = {u: {k: pyo.value(a(u, k)) for k in K} for u in m._as["as_units"]}
         out["cleared"] = {k: sum(pyo.value(m.y[k, i]) for i in range(len(asin["demand"][k]))) for k in K}
     return out
+
+
+
+def solve_with_fallback(units, load, penalty, network=(), asin=None, durations=None):
+    """Solve one run, falling back to other solvers if one fails; the output records which one solved it.
+
+    Order, starting from the default backend: PIQP; PIQP with stricter settings (more iterations, stricter
+    infeasibility detection: PIQP can stop early or declare a feasible problem infeasible); HiGHS, a different
+    algorithm (active set) that does not share PIQP's failure modes. Raises the last error if all fail.
+    """
+    piqp = [("piqp", {"backend": "piqp"}), ("piqp-strict", {"backend": "piqp", "piqp_settings": PIQP_STRICT})]
+    highs = [("highs", {"backend": "highs"})]
+    chain = piqp + highs if BACKEND == "piqp" else highs + piqp
+    error = None
+    for label, kw in chain:
+        try:
+            out = solve_interval(units, load, penalty, network, asin=asin, durations=durations, **kw)
+            out["solver"] = label
+            return out
+        except (NoOptimalSolutionError, NoDualsError, SolveError) as e:
+            error = e
+    raise error

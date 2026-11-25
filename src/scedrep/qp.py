@@ -13,11 +13,9 @@ import numpy as np
 import piqp
 import scipy.sparse as sp
 
-from scedrep.dispatch import DT, RAMP, UP, as_terms, energy_segments
+from scedrep.dispatch import DT, RAMP, UP, SolveError, as_terms, energy_segments
 
-
-class SolveError(RuntimeError):
-    """PIQP did not return an optimal solution."""
+__all__ = ["SolveError", "solve_interval_piqp"]  # SolveError lives in dispatch; re-exported for old imports
 
 
 class _Rows:
