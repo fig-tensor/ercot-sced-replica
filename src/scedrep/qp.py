@@ -13,7 +13,15 @@ import numpy as np
 import piqp
 import scipy.sparse as sp
 
-from scedrep.dispatch import DT, RAMP, UP, SolveError, as_terms, energy_segments
+from scedrep.dispatch import (
+    DT,
+    PFR_PENALTY,
+    RAMP,
+    UP,
+    SolveError,
+    as_terms,
+    energy_segments,
+)
 
 __all__ = ["SolveError", "solve_interval_piqp"]  # SolveError lives in dispatch; re-exported for old imports
 
@@ -58,6 +66,8 @@ def solve_interval_piqp(units, load, penalty, network=(), verbose=False, asin=No
             col["xa", *key] = len(col)
         for key in t["seg"]:
             col["y", *key] = len(col)
+        if t["pfr"]:
+            col["pfr_short"] = len(col)                       # MW short of the PFR floor
     n = len(col)
 
     # ---- objective 1/2 z'Pz + c'z (P diagonal) and bounds ----
@@ -78,6 +88,8 @@ def solve_interval_piqp(units, load, penalty, network=(), verbose=False, asin=No
         for (k, i), (P_, s_, w_) in t["seg"].items():
             j = col["y", k, i]
             Pd[j], cost[j], ub[j] = -s_, -P_, w_              # minus the concave value P*y + s*y^2/2
+        if t["pfr"]:
+            cost[col["pfr_short"]] = PFR_PENALTY              # shortfall priced at PFR_PENALTY
 
     # ---- equalities A z = b ----
     eq = _Rows()
@@ -119,9 +131,6 @@ def solve_interval_piqp(units, load, penalty, network=(), verbose=False, asin=No
             ineq.add({p: -1.0, **award(u, "REGDN")}, -t["lsl"][u])             # -p + RegDn <= -LSL
             ineq.add({p: 1.0, **award(u, "REGUP", RAMP)}, un["hdl"])           # p + 5/7 RegUp <= HDL
             ineq.add({p: -1.0, **award(u, "REGDN", RAMP)}, -un["ldl"])         # -p + 5/7 RegDn <= -LDL
-            for k in UP + ("REGDN",):                                            # award <= minutes x ramp rate
-                if (u, k) in t["ramp_cap"]:
-                    ineq.add(award(u, k), t["ramp_cap"][u, k])
             if durations and not np.isnan(un["soc"]):                           # battery duration rows
                 coefs = {p: DT}
                 for k in UP:
@@ -129,6 +138,15 @@ def solve_interval_piqp(units, load, penalty, network=(), verbose=False, asin=No
                         coefs[j] = coefs.get(j, 0.0) + a
                 ineq.add(coefs, un["soc"] - un["soc_min"])
                 ineq.add({p: -DT, **award(u, "REGDN", durations.get("REGDN", 0.0))}, un["soc_max"] - un["soc"])
+
+        for (u, k), cap in t["award_cap"].items():           # award caps: ramp minutes, PFR per resource
+            ineq.add(award(u, k), cap)
+        if t["pfr"]:                                          # PFR floor: -sum PFR - short <= F_PFR - min
+            coefs = {}
+            for u in t["as_units"]:
+                coefs.update(award(u, "RRSPFR", -1.0))
+            coefs[col["pfr_short"]] = -1.0
+            ineq.add(coefs, t["fixed"].get("RRSPFR", 0.0) - t["pfr"]["min"])
 
     # ---- solve ----
     A, b = eq.matrix(n)
@@ -153,7 +171,10 @@ def solve_interval_piqp(units, load, penalty, network=(), verbose=False, asin=No
     }
     if t is not None:
         out["mcpc"] = {k: float(-r.y[i]) for k, i in as_rows.items()}
+        ks = t["K"] + ["RRSPFR"] if t["pfr"] else t["K"]      # PFR awards reported alongside the products
         out["awards"] = {u: {k: float(sum(z[col["xa", *key]] for key in t["by_award"].get((u, k), [])))
-                             for k in t["K"]} for u in t["as_units"]}
+                             for k in ks} for u in t["as_units"]}
         out["cleared"] = {k: float(sum(z[col["y", k, i]] for (kk, i) in t["seg"] if kk == k)) for k in t["K"]}
+        if t["pfr"]:
+            out["pfr_short"] = float(z[col["pfr_short"]])     # MW short of the PFR floor
     return out

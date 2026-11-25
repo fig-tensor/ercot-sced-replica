@@ -16,15 +16,19 @@ def unit(price, hdl, hsl=None, lsl=0.0, ldl=0.0, soc=NAN, soc_min=NAN, soc_max=N
             "hsl": hdl if hsl is None else hsl, "lsl": lsl, "soc": soc, "soc_min": soc_min, "soc_max": soc_max,
             "rru": rru, "rrd": rrd}
 
+
 def blocks(*rows):
-    """AS offer blocks: rows of (unit, block, product, MW, price), all from ONRES rows (REGDN from REGDN)."""
-    return pd.DataFrame([{"Resource Name": u, "Offer Type": "REGDN" if k == "REGDN" else "ONRES", "block": b,
-                          "mw": q, "product": k, "price": p} for u, b, k, q, p in rows])
+    """AS offer blocks: rows of (unit, block, sub-product, MW, price), all from ONRES rows (REGDN from REGDN).
+    An RRS sub-type (RRSPFR, RRSUFR, RRSFFR) belongs to product RRS; any other sub-product is its product."""
+    return pd.DataFrame([{"Resource Name": u, "Offer Type": "REGDN" if s == "REGDN" else "ONRES", "block": b,
+                          "mw": q, "product": "RRS" if s.startswith("RRS") else s, "sub": s, "price": p}
+                         for u, b, s, q, p in rows])
 
 
-def asin(block_rows, demand, fixed=None):
-    """AS inputs in the shape build_as_interval returns. demand = {product: [(P, s, w), ...]}."""
-    return {"blocks": blocks(*block_rows), "fixed": fixed or {}, "demand": demand}
+def asin(block_rows, demand, fixed=None, pfr=None):
+    """AS inputs in the shape build_as_interval returns. demand = {product: [(P, s, w), ...]};
+    pfr = {"min": MW, "unit_max": MW} adds the PFR rows (None: none)."""
+    return {"blocks": blocks(*block_rows), "fixed": fixed or {}, "demand": demand, "pfr": pfr}
 
 
 def test_interior_as_price():
@@ -181,3 +185,57 @@ def test_ramp_minutes_battery_ecrs():
     assert out["awards"]["A"]["ECRS"] == approx(20, abs=1e-4)
     assert out["awards"]["B"]["ECRS"] == approx(10, abs=1e-4)
     assert out["mcpc"]["ECRS"] == approx(5, abs=1e-4)
+
+
+def rrs_units():
+    """A, B, C: AS sellers with expensive energy ($50); D ($10) serves the 200 MW load, so lambda = 10."""
+    return {"A": unit(50, 100), "B": unit(50, 100), "C": unit(50, 100), "D": unit(10, 500)}
+
+
+def test_pfr_floor_and_unit_cap():
+    # RRS 40 MW bought. FFR from B at $1 is cheapest, but at least 30 MW must be PFR, at most 20 MW per unit:
+    # A carries 20 PFR ($5), C the other 10 ($8), B the remaining 10 as FFR. One more MW of RRS would come from
+    # B: MCPC = $1. (The floor's own price, $8 - $1 = $7, is not part of the RRS MCPC.)
+    out = solve_interval(rrs_units(), 200, 5000, asin=asin(
+        [("A", 1, "RRSPFR", 50, 5), ("B", 1, "RRSFFR", 50, 1), ("C", 1, "RRSPFR", 50, 8)],
+        {"RRS": [(100, 0, 40)]}, pfr={"min": 30, "unit_max": 20}))
+    aw = out["awards"]
+    assert aw["A"]["RRSPFR"] == approx(20, abs=1e-4)
+    assert aw["C"]["RRSPFR"] == approx(10, abs=1e-4)
+    assert aw["B"]["RRS"] == approx(10, abs=1e-4)
+    assert aw["B"]["RRSPFR"] == approx(0, abs=1e-4)
+    assert out["mcpc"]["RRS"] == approx(1, abs=1e-4)
+    assert out["pfr_short"] == approx(0, abs=1e-4)
+    assert out["lambda"] == approx(10, abs=1e-4)
+
+
+def test_pfr_floor_counts_fixed_supply():
+    # 25 MW of PFR comes from resources the model doesn't dispatch (fixed), so only 5 more are needed:
+    # A 5 PFR ($5), B 15 FFR ($1) for the 20 MW of the 45 MW curve not already covered. MCPC $1.
+    out = solve_interval(rrs_units(), 200, 5000, asin=asin(
+        [("A", 1, "RRSPFR", 50, 5), ("B", 1, "RRSFFR", 50, 1)],
+        {"RRS": [(100, 0, 45)]}, fixed={"RRS": 25, "RRSPFR": 25}, pfr={"min": 30, "unit_max": 20}))
+    assert out["awards"]["A"]["RRSPFR"] == approx(5, abs=1e-4)
+    assert out["awards"]["B"]["RRS"] == approx(15, abs=1e-4)
+    assert out["mcpc"]["RRS"] == approx(1, abs=1e-4)
+
+
+def test_pfr_floor_shortfall():
+    # Only A offers PFR and may carry at most 20 MW: the floor (30) is 10 MW short, priced at the penalty
+    # rather than making the run infeasible. B fills the rest of the 50 MW as FFR.
+    out = solve_interval(rrs_units(), 200, 5000, asin=asin(
+        [("A", 1, "RRSPFR", 50, 5), ("B", 1, "RRSFFR", 50, 1)],
+        {"RRS": [(100, 0, 50)]}, pfr={"min": 30, "unit_max": 20}))
+    assert out["awards"]["A"]["RRSPFR"] == approx(20, abs=1e-4)
+    assert out["pfr_short"] == approx(10, abs=1e-4)
+    assert out["awards"]["B"]["RRS"] == approx(30, abs=1e-4)
+
+
+def test_no_ufr_from_dispatched_units():
+    # UFR is a Load Resource service: A's $1 UFR price is dropped (A offers nothing else, so it gets no AS
+    # variables at all) and B's FFR at $5 supplies RRS. MCPC $5.
+    out = solve_interval(rrs_units(), 200, 5000, asin=asin(
+        [("A", 1, "RRSUFR", 50, 1), ("B", 1, "RRSFFR", 50, 5)], {"RRS": [(100, 0, 10)]}))
+    assert "A" not in out["awards"]
+    assert out["awards"]["B"]["RRS"] == approx(10, abs=1e-4)
+    assert out["mcpc"]["RRS"] == approx(5, abs=1e-4)

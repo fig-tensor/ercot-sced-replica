@@ -20,7 +20,7 @@ def test_run_day_with_as():
                            "block": [1, 1], "mw": [30.0, 40.0], "product": ["REGUP"] * 2, "price": [5.0, 10.0]})
     # ERCOT's awards: A 30, B 20 (what the model should reproduce), all other products 0
     awards = pd.DataFrame({"SCED Timestamp": [TS, TS], "Resource Name": ["A", "B"],
-                           **{k: [0.0, 0.0] for k in PRODUCTS}})
+                           **{k: [0.0, 0.0] for k in PRODUCTS + ["RRSPFR", "RRSUFR", "RRSFFR"]}})
     awards["REGUP"] = [30.0, 20.0]
     asdc = pd.DataFrame([{"HourEnding": "01:00", "RepeatedHourFlag": "N", "ASType": k,
                           "curve": [(0, 100), (50 if k == "REGUP" else 1, 100)]} for k in PRODUCTS])

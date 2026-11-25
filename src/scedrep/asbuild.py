@@ -1,7 +1,7 @@
 """Ancillary-service (AS) inputs for one SCED run: offer blocks, fixed supply, demand curves.
 
-Data in, model inputs out; no optimization here. Products k: REGUP, REGDN, RRS (PFR/UFR/FFR pooled),
-ECRS, NSPIN.
+Data in, model inputs out; no optimization here. Products k: REGUP, REGDN, RRS, ECRS, NSPIN. RRS is offered
+and awarded by sub-type (PFR, UFR, FFR); blocks keep each sub-type's own price.
 """
 
 from itertools import pairwise
@@ -13,6 +13,12 @@ UP = ["REGUP", "RRS", "ECRS", "NSPIN"]  # products offered in ONRES rows; REGDN 
 SUB = ["REGUP", "REGDN", "RRSPFR", "RRSUFR", "RRSFFR", "NSPIN", "ECRS"]  # price columns as offered
 RRS_SUB = ["RRSPFR", "RRSUFR", "RRSFFR"]
 TZ = "US/Central"
+
+# RRS from Primary Frequency Response: system minimum (MW) by year, from ERCOT's AS methodology for that year
+# (2026: market notice M-A121925-01), and the most one resource may carry (MW). In ERCOT's own awards,
+# Sept 15-21 2026, total PFR sits at exactly 1,377 MW in nearly every run and the largest award at 157.0 MW.
+PFR_MIN = {2026: 1377.0}
+PFR_UNIT_MAX = 157.0
 
 # ERCOT renamed the price-column suffixes in late March 2026; map old names to new ones.
 OLD_TO_NEW = {"_URS": "_REGUP", "_DRS": "_REGDN", "_NS": "_NSPIN",
@@ -44,9 +50,9 @@ def as_offer_blocks(offers):
     """Raw AS offer table -> one row per (run, unit, offer type, block b, product k) that is offered.
 
     Each block b has one MW quantity Q_b shared by every product it prices. Kept: blocks with
-    Q_b > 0 and a price for k; up-products from ONRES rows, REGDN from REGDN rows. RRS sub-types are
-    pooled at the cheapest priced sub-type. Columns: SCED Timestamp, Resource Name, Offer Type,
-    block, mw, product, price.
+    Q_b > 0 and a price for k; up-products from ONRES rows, REGDN from REGDN rows. RRS sub-types each keep
+    their own row and price (product RRS, sub RRSPFR / RRSUFR / RRSFFR); for other products sub = product.
+    Columns: SCED Timestamp, Resource Name, Offer Type, block, mw, product, sub, price.
     """
     if "Offer Type" not in offers.columns:
         raise ValueError("no 'Offer Type' column: files before operating day 2026-06-25 are not supported")
@@ -71,23 +77,19 @@ def as_offer_blocks(offers):
             sel = df.loc[keep, ["SCED Timestamp", "Resource Name", "Offer Type", qcol, pcol]]
             frames.append(sel.set_axis(["SCED Timestamp", "Resource Name", "Offer Type", "mw", "price"], axis=1)
                           .assign(block=b, sub=s))
-    cols = ["SCED Timestamp", "Resource Name", "Offer Type", "block", "mw", "product", "price"]
+    cols = ["SCED Timestamp", "Resource Name", "Offer Type", "block", "mw", "product", "sub", "price"]
     if not frames:
         return pd.DataFrame(columns=cols)
     x = pd.concat(frames, ignore_index=True)
     x["Resource Name"] = x["Resource Name"].astype(str)
     x["Offer Type"] = x["Offer Type"].astype(str)
-    x["product"] = x["sub"].where(~x["sub"].isin(RRS_SUB), "RRS")  # pool the RRS sub-types
+    x["product"] = x["sub"].where(~x["sub"].isin(RRS_SUB), "RRS")  # sub-types belong to RRS
 
     # Keep products from the row type that carries them
     up = (x["Offer Type"] == "ONRES") & x["product"].isin(UP)
     dn = (x["Offer Type"] == "REGDN") & (x["product"] == "REGDN")
     x = x[up | dn]
-
-    # One price per (block, product): the cheapest RRS sub-type; other products are already unique
-    key = ["SCED Timestamp", "Resource Name", "Offer Type", "block", "product"]
-    x = x.groupby(key, as_index=False, observed=True).agg(mw=("mw", "first"), price=("price", "min"))
-    return x[cols]
+    return x[cols].reset_index(drop=True)
 
 
 # ---------- 2. awards ----------
@@ -95,7 +97,8 @@ def as_offer_blocks(offers):
 def as_awards(*tables):
     """ERCOT AS awards per (run, resource) from any number of resource tables (gen, ESR, load).
 
-    Columns: SCED Timestamp, Resource Name, REGUP, REGDN, RRS (PFR+UFR+FFR), ECRS, NSPIN (MW).
+    Columns: SCED Timestamp, Resource Name, REGUP, REGDN, RRS (PFR+UFR+FFR), ECRS, NSPIN, and the RRS
+    sub-types RRSPFR, RRSUFR, RRSFFR (MW; a missing sub-type column counts as 0).
     """
     parts = []
     for t in tables:
@@ -109,6 +112,9 @@ def as_awards(*tables):
                 out[k] = t[present].fillna(0).sum(axis=1)   # sub-types add up to RRS
             else:
                 out[k] = t[present[0]].fillna(0)            # processed name if present, else raw
+        for s in RRS_SUB:
+            c = f"AS Awards {s}"
+            out[s] = t[c].fillna(0) if c in t.columns else 0.0
         parts.append(out)
     return pd.concat(parts, ignore_index=True)
 
@@ -119,11 +125,24 @@ def fixed_supply(awards, ts, units):
     """F_k = sum of ERCOT awards at run ts over resources the model does not dispatch (not in units).
 
     Covers Load Resources, offline units and units with a pinned range. With F_k fixed, the AS balance
-    sum_{u in units} a_uk + F_k = q_k holds exactly at ERCOT's own solution.
+    sum_{u in units} a_uk + F_k = q_k holds exactly at ERCOT's own solution. Also F for RRSPFR (the PFR
+    floor row needs it).
     """
+    if "RRSPFR" not in awards.columns:
+        raise ValueError("awards table has no RRSPFR column: rebuild it with as_awards "
+                         "(tables made before RRS sub-types were split lack it)")
     a = awards[awards["SCED Timestamp"] == ts]
     rest = a[~a["Resource Name"].isin(set(units))]
-    return {k: float(rest[k].sum()) for k in PRODUCTS}
+    return {k: float(rest[k].sum()) for k in PRODUCTS + ["RRSPFR"]}
+
+
+def pfr_limits(ts):
+    """PFR floor and per-resource cap for run ts: {"min": MW, "unit_max": MW}. Raises for a year with no
+    known floor rather than guess (the floor changes every year)."""
+    year = pd.Timestamp(ts).tz_convert(TZ).year
+    if year not in PFR_MIN:
+        raise ValueError(f"no RRS-PFR minimum on file for {year}: add it to PFR_MIN from that year's AS methodology")
+    return {"min": PFR_MIN[year], "unit_max": PFR_UNIT_MAX}
 
 
 # ---------- 4. demand curves ----------
@@ -180,7 +199,7 @@ def build_as_interval(blocks, awards, asdc, ts, units):
 
     blocks: output of as_offer_blocks; awards: output of as_awards; asdc: demand-curve table
     (one row per HourEnding, RepeatedHourFlag, ASType with a 'curve'); units: the names the energy model
-    dispatches (keys of build_interval's units). Returns {"blocks", "fixed", "demand"}.
+    dispatches (keys of build_interval's units). Returns {"blocks", "fixed", "demand", "pfr"}.
     """
     names = set(units)
     b = blocks[(blocks["SCED Timestamp"] == ts) & blocks["Resource Name"].isin(names)].reset_index(drop=True)
@@ -188,6 +207,7 @@ def build_as_interval(blocks, awards, asdc, ts, units):
         "blocks": b,                                  # one row per (unit, offer type, block, product)
         "fixed": fixed_supply(awards, ts, names),     # F_k
         "demand": asdc_for_run(asdc, ts),             # segments per product
+        "pfr": pfr_limits(ts),                        # RRS-PFR floor and per-resource cap
     }
 
 
