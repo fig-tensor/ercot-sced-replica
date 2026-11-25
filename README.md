@@ -2,7 +2,7 @@
 
 [![ci](https://github.com/fig-tensor/ercot-sced-replica/actions/workflows/ci.yml/badge.svg)](https://github.com/fig-tensor/ercot-sced-replica/actions/workflows/ci.yml) [![release](https://img.shields.io/github/v/release/fig-tensor/ercot-sced-replica)](https://github.com/fig-tensor/ercot-sced-replica/releases) [![license](https://img.shields.io/github/license/fig-tensor/ercot-sced-replica)](LICENSE)
 
-An open, validated nodal model of ERCOT's real-time market, built from public data. When no transmission constraint binds, the median error against ERCOT's published price is one cent (80% of runs within $0.85). With transmission constraints estimated from public prices, the congested-run median error drops from between -$2 and -$6 to within $0.50 on ordinary days. With ancillary services co-optimized the way ERCOT's real-time market has cleared them since December 2025, the congested-run median absolute error falls further on every day tested (to $0.11-0.32 on five of seven days) and ancillary-service prices are reproduced to within 3 cents (median). A day-ahead model built on ERCOT's public forecasts predicts which constraints will bind in each hour (AUC 0.88; 19% lower Brier score than the recent binding rate).
+An open, validated nodal model of ERCOT's real-time market, built from public data. When no transmission constraint binds, the median error against ERCOT's published price is one cent (80% of runs within $0.85). With transmission constraints estimated from public prices, the congested-run median error drops from between -$2 and -$6 to within $0.50 on ordinary days. With ancillary services co-optimized the way ERCOT's real-time market has cleared them since December 2025, the congested-run median absolute error falls further on every day tested (to $0.11-0.32 on five of seven days) and ancillary-service prices are reproduced to within half a cent (median; 1-8 cents at the 90th percentile). A day-ahead model built on ERCOT's public forecasts predicts which constraints will bind in each hour (AUC 0.88; 19% lower Brier score than the recent binding rate).
 
 ![ERCOT system lambda vs replica with and without the network, 2026-09-15](docs/lambda_network_2026-09-15.png)
 
@@ -115,32 +115,50 @@ The two fixes do different jobs. The network fixes congested prices; batteries f
 Since RTC+B (December 2025), ERCOT's real-time market clears energy and five ancillary services together: Regulation Up and Down, Responsive Reserve (RRS), Contingency Reserve (ECRS) and Non-Spinning Reserve. Each service has a price (MCPC) set by its own supply and demand, and holding capacity in reserve competes with producing energy, so reserve prices feed into λ. An energy-only model cannot produce that.
 
 The replica co-optimizes them from ERCOT's public data:
-- Offers - each resource offers up to six blocks; a block has one MW quantity shared by every service it prices (verified on 2026-09-21: ERCOT's awards fit this reading on every unit-run, using only blocks priced at or below the clearing price). ERCOT's proxy offers for resources that did not offer are already in the published data.
-- Demand - ERCOT's hourly demand curve for each service, linear between points. On 2026-09-21 ERCOT bought the full planned quantity of RegUp, RegDn, RRS and ECRS in every run, with the price set by supply; Non-Spin cleared on the sloped part of its curve, where ERCOT's price equalled the curve at the cleared quantity to the cent.
-- Limits - output plus up-reserves within the high sustained limit, a regulation ramp limit, and for batteries enough stored energy to sustain each award (ERCOT's qualification durations: 0.5 h for regulation and RRS, 1 h for ECRS, 4 h for Non-Spin). Without the duration limit, batteries take reserves ERCOT gave to other units and the reserve prices collapse.
+- Offers - each resource offers up to six blocks; a block has one MW quantity shared by every service it prices (verified on 2026-09-21: ERCOT's awards fit this reading on every unit-run). RRS sub-types keep their own prices: primary frequency response (PFR) and fast frequency response (FFR); under-frequency relay (UFR) comes from Load Resources. ERCOT's proxy offers for resources that did not offer are already in the published data.
+- Demand - ERCOT's hourly demand curve for each service, linear between points. ERCOT buys the full planned quantity of RegUp, RegDn, RRS and ECRS, with the price set by supply; Non-Spin clears on the sloped part of its curve.
 - Fixed - resources the replica does not dispatch (Load Resources, offline units) keep ERCOT's awards.
+
+**Rules recovered from ERCOT's own awards.** ERCOT's base points and awards must satisfy every rule ERCOT enforces, so each candidate rule was scored against them over 2026-09-15 to 09-21 (2.4 million unit-runs): a real rule is never broken and binds sometimes.
+- Capacity - output plus up-reserves within the larger of the high sustained limit (HSL) and the high dispatch limit (HDL). ERCOT's solution never exceeds it; HSL alone was exceeded 19 times, all by under 1 MW, on units whose HDL sat just above HSL.
+- Award caps - each award within the unit's telemetered capability for that service times its deployment time: 5 minutes for regulation, 10 for ECRS, 30 for Non-Spin. Never broken by any of ERCOT's ~650,000 awards, and binding tens of thousands of times. The same rule with the disclosed ramp rate in place of the capability was broken about 4,600 times.
+- RRS from PFR - at least 1,377 MW system-wide, at most 157 MW per resource (ERCOT's 2026 AS methodology). Both bind: ERCOT's total PFR sits at exactly 1,377 MW in nearly every run, and its largest single PFR award is exactly 157.0 MW every day. The minimum is imposed as a cap on FFR (FFR at most the room left after the required PFR), which is the same thing when the RRS curve is bought in full and keeps the solver well-conditioned (see Solver).
+- Batteries hold enough stored energy to sustain each award (ERCOT's qualification durations: 0.5 h for regulation and RRS, 1 h for ECRS, 4 h for Non-Spin), and regulation awards respect a 5/7 ramp factor from ERCOT's training material.
+
+**Prices.** ERCOT's awards obey the PFR minimum, but its RRS price does not reflect it: on 2026-09-15 and 09-18, RRS prices from a solve without the PFR rows matched ERCOT's (median error $0.004, no run off by more than $1), while the same solve with them was off by more than $1 in over 200 runs. So quantities come from the full model and prices from a second solve without the PFR rows. Why ERCOT's price behaves this way is not established.
 
 Median absolute λ error on congested runs, energy only vs with ancillary services (network and batteries in both):
 
 | Date | Energy only | With AS |
 |---|---|---|
 | 2026-09-15 | $0.19 | $0.11 |
-| 2026-09-16 | $6.99 | $3.09 |
-| 2026-09-17 | $1.17 | $0.98 |
+| 2026-09-16 | $6.99 | $3.13 |
+| 2026-09-17 | $1.17 | $0.68 |
 | 2026-09-18 | $0.35 | $0.32 |
-| 2026-09-19 | $0.32 | $0.29 |
+| 2026-09-19 | $0.32 | $0.28 |
 | 2026-09-20 | $0.37 | $0.27 |
-| 2026-09-21 | $0.37 | $0.12 |
+| 2026-09-21 | $0.37 | $0.11 |
 
-The days where energy-only missed without congestion are the clearest: median uncongested error $0.77 -> $0.10 on 2026-09-16 and $0.40 -> $0.00 on 2026-09-20; evening (18-21) median error -$0.53 -> -$0.10 on 2026-09-15 and -$0.79 -> $0.00 on 2026-09-20. All 2,032 runs solved.
+The days where energy-only missed without congestion are the clearest: median uncongested error $0.58 -> $0.07 on 2026-09-16 and $0.40 -> $0.00 on 2026-09-20; evening (18-21) median error -$0.53 -> -$0.08 on 2026-09-15 and -$0.79 -> $0.01 on 2026-09-20. 2,029 of 2,032 runs solved.
 
-Ancillary-service prices: median absolute error $0.00-0.03 per service over the week (90th percentile $0.08-0.61). The share of ERCOT's awards placed on a different unit is 8-13% for RegUp, RegDn and Non-Spin and 27-36% for ECRS and RRS, where many offers carry identical prices.
+Ancillary-service prices over the week:
+
+| Service | Median abs. error | 90th percentile | Awards on a different unit than ERCOT's |
+|---|---|---|---|
+| RegUp | $0.002 | $0.05 | 4% |
+| RegDn | $0.000 | $0.07 | 8% |
+| RRS | $0.004 | $0.01 | 27% |
+| ECRS | $0.003 | $0.02 | 14% |
+| Non-Spin | $0.000 | $0.08 | 4% |
+
+($/MW-h. RRS and ECRS awards often land on other units at the right price: many offers carry identical prices.)
 
 Limits:
 - Load Resources and offline units are held at ERCOT's awards (about 27% of Non-Spin supply, 42% of RRS).
-- Battery durations are ERCOT's qualification values, not calibrated to its real-time rule.
-- Non-Spin is priced about $1-1.7 below ERCOT on some late evenings; the replica clears more Non-Spin than ERCOT did there, for a reason not yet identified.
-- The 2026-09-16 evening stays off by hundreds of dollars: the transmission coverage gap (see Congestion), not reserves.
+- Battery durations are ERCOT's qualification values; ERCOT's own PFR awards occasionally exceed the 0.5 h RRS duration slightly.
+- The FFR maximum (450 MW) and the Load Resource share of RRS (60%) are not modeled: neither came close to binding in the week tested.
+- The PFR minimum is on file for 2026 only.
+- The 2026-09-16 evening stays off by hundreds of dollars, with Non-Spin $11-26 high: the transmission coverage gap (see Congestion), not reserves.
 
 ## Solver
 
@@ -148,7 +166,9 @@ With ancillary services, a run has about 17,000 variables (thousands of 1-MW dem
 
 Regression, energy only, 2026-09-15 to 09-21: on the 2,019 runs both solvers solved, they never differed by more than $0.01 on the same model. PIQP solved 13 runs HiGHS could not (2,032 against 2,019), every validated median was equal or better, and runs took about 0.02 s instead of 1-2 s.
 
-Telemetry is not always consistent: a unit's sustained limit can sit below its dispatch floor (HSL < LDL, e.g. during a derate). ERCOT then holds the unit at its floor with no reserves, and the replica does the same; without that rule 7 runs of the week were infeasible.
+Telemetry is not always consistent: a unit's sustained limit can sit below its dispatch floor (HSL < LDL, e.g. during a derate). Using the larger of HSL and HDL in the capacity limit keeps every such run feasible.
+
+Interior-point methods need room inside the constraints to move. A first version imposed the PFR minimum as a floor with a penalised shortfall ($10,000/MW). On 20 runs PIQP stalled: in some, the floor coincided with the end of the RRS demand curve, or sat 0.01 MW beyond it, which leaves no interior; in others the large penalty coefficient alone was enough. Stating the minimum as a cap on FFR, with FFR offers dropped when there is no room for them, solved them all, with no penalty. The HiGHS fallback fails on most runs that stall PIQP (it hits its time limit), so it rarely rescues one.
 
 ## Day-ahead congestion forecast
 
@@ -190,10 +210,11 @@ Limits:
 
 ## Known gaps
 
-- Ancillary services - Load Resources and offline units keep ERCOT's awards; battery durations are not calibrated; not yet in the daily run (see Ancillary services).
+- Ancillary services - Load Resources and offline units keep ERCOT's awards; battery durations are not calibrated; ERCOT's own pricing run (reliability deployment price adders) is not modeled; not yet in the daily run (see Ancillary services).
 - Transmission - covers only constraints that bound in the prior 14 days, and is given ERCOT's binding set and flows (see Congestion).
 - No unit commitment - offline and quick-start units are never started.
 - A run is recorded as failed (ok = False) only if PIQP, PIQP with stricter settings and HiGHS all fail.
+- 3 of 2,032 runs in the ancillary-service week do not solve (PIQP stalls; the HiGHS fallback times out).
 - Batteries - charging efficiency is taken as 1. Where ERCOT charged past the state-of-charge limit, it did so by about 14% (median), consistent with efficiency near 0.88, but that sample only includes the overshoots, so it isn't a fitted value.
 - Daylight-saving: the fall-back repeated hour is matched using ERCOT's RepeatedHourFlag; spring-forward unverified until the daily run reaches mid-March.
 
@@ -207,7 +228,7 @@ A scheduled GitHub workflow re-clears the newest disclosed day (about 61 days ba
 
 ## Teaching
 
-The repo is also intended as a worked example for teaching optimization and applied ML on real market data. Built so far - LP and QP, from a two-unit toy dispatch with hand-checkable duals, through offer-curve segments as a convex QP, to clearing real ERCOT intervals; then least-squares recovery of shift factors from public prices, with out-of-sample tests and a tuned rolling window; then co-optimized energy and reserves, with a comparison of active-set and interior-point QP methods on the same model; then a day-ahead classifier for binding constraints, with leakage-safe features, a walk-forward test against honest baselines, a regularization sweep, a lasso for interpretation and a paired bootstrap. The known-answer tests are the worked examples. Planned - supervised learning on the validation results (regressing λ error on congestion, load, renewables and hour, with a date-based train/test split).
+The repo is also intended as a worked example for teaching optimization and applied ML on real market data. Built so far - LP and QP, from a two-unit toy dispatch with hand-checkable duals, through offer-curve segments as a convex QP, to clearing real ERCOT intervals; then least-squares recovery of shift factors from public prices, with out-of-sample tests and a tuned rolling window; then co-optimized energy and reserves, with a comparison of active-set and interior-point QP methods on the same model, and market rules recovered by scoring candidates against the operator's own solution; then a day-ahead classifier for binding constraints, with leakage-safe features, a walk-forward test against honest baselines, a regularization sweep, a lasso for interpretation and a paired bootstrap. The known-answer tests are the worked examples. Planned - supervised learning on the validation results (regressing λ error on congestion, load, renewables and hour, with a date-based train/test split).
 
 ## License
 
