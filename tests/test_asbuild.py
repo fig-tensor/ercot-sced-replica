@@ -26,7 +26,7 @@ def offer_row(name, otype, q, prices, ts=TS, suffix=None):
     return r
 
 
-def test_offer_blocks_shared_mw_and_pooled_rrs():
+def test_offer_blocks_shared_mw_and_rrs_subtypes():
     offers = pd.DataFrame([
         # block 1: 20 MW shared by RegUp and two RRS sub-types; block 2: priced but 0 MW (dropped);
         # block 3: 30 MW of ECRS only
@@ -35,13 +35,15 @@ def test_offer_blocks_shared_mw_and_pooled_rrs():
         offer_row("G", "OFFNS", {1: 40}, {(1, "NSPIN"): 1}),    # OFFNS rows are not used
         offer_row("G", "REGDN", {1: 50}, {(1, "REGDN"): 1}),
     ])
-    x = as_offer_blocks(offers).set_index(["Offer Type", "block", "product"])
+    x = as_offer_blocks(offers).set_index(["Offer Type", "block", "sub"]).sort_index()
 
-    assert set(x.index) == {("ONRES", 1, "REGUP"), ("ONRES", 1, "RRS"), ("ONRES", 3, "ECRS"),
-                            ("REGDN", 1, "REGDN")}
-    assert x.loc[("ONRES", 1, "RRS"), "price"] == 2           # cheapest RRS sub-type
+    assert set(x.index) == {("ONRES", 1, "REGUP"), ("ONRES", 1, "RRSPFR"), ("ONRES", 1, "RRSUFR"),
+                            ("ONRES", 3, "ECRS"), ("REGDN", 1, "REGDN")}
+    assert x.loc[("ONRES", 1, "RRSPFR"), "price"] == 3        # each sub-type keeps its own price
+    assert x.loc[("ONRES", 1, "RRSUFR"), "price"] == 2
+    assert x.loc[("ONRES", 1, "RRSPFR"), "product"] == "RRS"  # and belongs to RRS
     assert x.loc[("ONRES", 1, "REGUP"), "mw"] == 20           # same block, same shared MW
-    assert x.loc[("ONRES", 1, "RRS"), "mw"] == 20
+    assert x.loc[("ONRES", 1, "RRSPFR"), "mw"] == 20
 
 
 def test_offer_blocks_old_suffixes_read_the_same():
@@ -71,6 +73,7 @@ def test_awards_processed_and_raw_names():
     for t in (processed, raw):
         a = as_awards(t).iloc[0]
         assert (a["REGUP"], a["REGDN"], a["ECRS"], a["NSPIN"], a["RRS"]) == (1, 2, 3, 4, 11)  # RRS = 5 + 6
+        assert (a["RRSPFR"], a["RRSUFR"], a["RRSFFR"]) == (5, 6, 0)                          # sub-types kept
     with pytest.raises(ValueError, match="ECRS"):
         as_awards(processed.drop(columns="AS Awards ECRS"))
 
@@ -112,5 +115,18 @@ def test_build_as_interval_fixed_supply_and_blocks():
     out = build_as_interval(blocks, awards, asdc, TS, units={"A": {}})
 
     assert set(out["blocks"]["Resource Name"]) == {"A"}           # only dispatched units' blocks
-    assert out["fixed"] == {"REGUP": 0, "REGDN": 0, "RRS": 9, "ECRS": 0, "NSPIN": 25}  # load + offline unit
+    assert out["fixed"] == {"REGUP": 0, "REGDN": 0, "RRS": 9, "ECRS": 0, "NSPIN": 25,  # load + offline unit
+                            "RRSPFR": 0}                                               # the load's RRS is UFR
+    assert out["pfr"] == {"min": 1377.0, "unit_max": 157.0}       # 2026 limits
     assert out["demand"]["REGUP"] == [(5000, 0, 100)]
+
+def test_pfr_limits_and_stale_awards():
+    from scedrep.asbuild import fixed_supply, pfr_limits
+
+    assert pfr_limits(TS) == {"min": 1377.0, "unit_max": 157.0}
+    with pytest.raises(ValueError, match="2025"):             # no floor on file: refuse rather than guess
+        pfr_limits(pd.Timestamp("2025-12-10 12:00", tz="US/Central"))
+    stale = pd.DataFrame({"SCED Timestamp": [TS], "Resource Name": ["G"],
+                          **{k: [0.0] for k in ["REGUP", "REGDN", "RRS", "ECRS", "NSPIN"]}})
+    with pytest.raises(ValueError, match="RRSPFR"):           # awards built before the sub-type split
+        fixed_supply(stale, TS, ["G"])

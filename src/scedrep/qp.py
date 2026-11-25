@@ -13,7 +13,14 @@ import numpy as np
 import piqp
 import scipy.sparse as sp
 
-from scedrep.dispatch import DT, RAMP, UP, SolveError, as_terms, energy_segments
+from scedrep.dispatch import (
+    DT,
+    RAMP,
+    UP,
+    SolveError,
+    as_terms,
+    energy_segments,
+)
 
 __all__ = ["SolveError", "solve_interval_piqp"]  # SolveError lives in dispatch; re-exported for old imports
 
@@ -127,6 +134,15 @@ def solve_interval_piqp(units, load, penalty, network=(), verbose=False, asin=No
                 ineq.add(coefs, un["soc"] - un["soc_min"])
                 ineq.add({p: -DT, **award(u, "REGDN", durations.get("REGDN", 0.0))}, un["soc_max"] - un["soc"])
 
+        for (u, k), cap in t["award_cap"].items():           # award caps: ramp minutes, PFR per resource
+            ineq.add(award(u, k), cap)
+        if t["ffr_cap"] is not None:                          # PFR floor as an FFR cap: sum FFR <= ffr_cap
+            coefs = {}
+            for u in t["as_units"]:
+                coefs.update(award(u, "RRSFFR"))
+            if coefs:
+                ineq.add(coefs, t["ffr_cap"])
+
     # ---- solve ----
     A, b = eq.matrix(n)
     G, h = ineq.matrix(n)
@@ -150,7 +166,11 @@ def solve_interval_piqp(units, load, penalty, network=(), verbose=False, asin=No
     }
     if t is not None:
         out["mcpc"] = {k: float(-r.y[i]) for k, i in as_rows.items()}
+        ks = t["K"] + ["RRSPFR"] if t["pfr"] else t["K"]      # PFR awards reported alongside the products
         out["awards"] = {u: {k: float(sum(z[col["xa", *key]] for key in t["by_award"].get((u, k), [])))
-                             for k in t["K"]} for u in t["as_units"]}
+                             for k in ks} for u in t["as_units"]}
         out["cleared"] = {k: float(sum(z[col["y", k, i]] for (kk, i) in t["seg"] if kk == k)) for k in t["K"]}
+        if t["pfr"]:                                          # MW short of the PFR floor (N - sum PFR), 0 if met
+            got = sum(aw["RRSPFR"] for aw in out["awards"].values())
+            out["pfr_short"] = max(0.0, t["pfr"]["need"] - got)
     return out

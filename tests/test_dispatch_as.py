@@ -9,21 +9,26 @@ from scedrep.dispatch import solve_interval
 NAN = math.nan
 
 
-def unit(price, hdl, hsl=None, lsl=0.0, ldl=0.0, soc=NAN, soc_min=NAN, soc_max=NAN):
-    """A unit with a flat energy offer `price` from ldl to hdl MW (hsl defaults to hdl)."""
+def unit(price, hdl, hsl=None, lsl=0.0, ldl=0.0, soc=NAN, soc_min=NAN, soc_max=NAN, caps=None):
+    """A unit with a flat energy offer `price` from ldl to hdl MW (hsl defaults to hdl). A unit with soc is a
+    battery. caps = {product: telemetered AS capability, MW/min}; a product left out has none (no cap row)."""
     return {"curve": [(ldl, price), (hdl, price)], "ldl": ldl, "hdl": hdl, "bp": 0.0,
-            "hsl": hdl if hsl is None else hsl, "lsl": lsl, "soc": soc, "soc_min": soc_min, "soc_max": soc_max}
+            "hsl": hdl if hsl is None else hsl, "lsl": lsl, "soc": soc, "soc_min": soc_min, "soc_max": soc_max,
+            **{f"cap_{k}": (caps or {}).get(k, NAN) for k in ["REGUP", "REGDN", "ECRS", "NSPIN"]}}
 
 
 def blocks(*rows):
-    """AS offer blocks: rows of (unit, block, product, MW, price), all from ONRES rows (REGDN from REGDN)."""
-    return pd.DataFrame([{"Resource Name": u, "Offer Type": "REGDN" if k == "REGDN" else "ONRES", "block": b,
-                          "mw": q, "product": k, "price": p} for u, b, k, q, p in rows])
+    """AS offer blocks: rows of (unit, block, sub-product, MW, price), all from ONRES rows (REGDN from REGDN).
+    An RRS sub-type (RRSPFR, RRSUFR, RRSFFR) belongs to product RRS; any other sub-product is its product."""
+    return pd.DataFrame([{"Resource Name": u, "Offer Type": "REGDN" if s == "REGDN" else "ONRES", "block": b,
+                          "mw": q, "product": "RRS" if s.startswith("RRS") else s, "sub": s, "price": p}
+                         for u, b, s, q, p in rows])
 
 
-def asin(block_rows, demand, fixed=None):
-    """AS inputs in the shape build_as_interval returns. demand = {product: [(P, s, w), ...]}."""
-    return {"blocks": blocks(*block_rows), "fixed": fixed or {}, "demand": demand}
+def asin(block_rows, demand, fixed=None, pfr=None):
+    """AS inputs in the shape build_as_interval returns. demand = {product: [(P, s, w), ...]};
+    pfr = {"min": MW, "unit_max": MW} adds the PFR rows (None: none)."""
+    return {"blocks": blocks(*block_rows), "fixed": fixed or {}, "demand": demand, "pfr": pfr}
 
 
 def test_interior_as_price():
@@ -122,14 +127,156 @@ def test_highs_options_override():
 
 
 def test_sustained_limit_below_dispatch_floor():
-    # ERCOT data, TIMPP_AGR2 on 2026-09-16 08:55:18: LDL 6.0 > HSL 5.1 (derate), HDL 55.8. ERCOT held it at
-    # 6.0 MW with no AS. The capacity rows use max(HSL, LDL) = 6, so A is pinned at 6 MW and gets no RegUp;
-    # B ($20) serves the rest of the load and supplies RegUp ($2, inside its block): lambda 20, MCPC 2.
+    # ERCOT data, TIMPP_AGR2 on 2026-09-16 08:55:18: LDL 6.0 > HSL 5.1 (derate), HDL 55.8. The capacity rows
+    # use H = max(HSL, HDL) = 55.8 >= LDL, so the run stays feasible. A ($10) runs to HDL; RegUp from A would
+    # cost $10 of displaced energy + $1, more than B's $2, so B ($20, marginal) supplies it: lambda 20, MCPC 2.
     units = {"A": unit(10, 55.8, hsl=5.1, lsl=5.1, ldl=6.0), "B": unit(20, 200)}
     out = solve_interval(units, 100, 5000, asin=asin(
         [("A", 1, "REGUP", 10, 1), ("B", 1, "REGUP", 20, 2)], {"REGUP": [(100, 0, 10)]}))
-    assert out["dispatch"]["A"] == approx(6, abs=1e-4)
+    assert out["dispatch"]["A"] == approx(55.8, abs=1e-4)
+    assert out["dispatch"]["B"] == approx(44.2, abs=1e-4)
     assert out["awards"]["A"]["REGUP"] == approx(0, abs=1e-4)
     assert out["awards"]["B"]["REGUP"] == approx(10, abs=1e-4)
     assert out["lambda"] == approx(20, abs=1e-4)
     assert out["mcpc"]["REGUP"] == approx(2, abs=1e-4)
+
+
+def test_capacity_row_uses_hdl_above_hsl():
+    # ERCOT data, MDANP_CT1 on 2026-09-15 01:55:16: HSL 227.2, HDL 227.57 (HDL above HSL by 0.37 MW); ERCOT's
+    # base point plus NSpin award came to 227.57. With H = max(HSL, HDL) the cheap unit A ($10) runs to HDL,
+    # not HSL; B ($20) is marginal for energy and supplies the NSpin ($5 vs $10 + $1 from A): lambda 20, MCPC 5.
+    units = {"A": unit(10, 227.57, hsl=227.2, lsl=150, ldl=187.57), "B": unit(20, 500)}
+    out = solve_interval(units, 300, 5000, asin=asin(
+        [("A", 1, "NSPIN", 10, 1), ("B", 1, "NSPIN", 20, 5)], {"NSPIN": [(100, 0, 1)]}))
+    assert out["dispatch"]["A"] == approx(227.57, abs=1e-4)
+    assert out["awards"]["B"]["NSPIN"] == approx(1, abs=1e-4)
+    assert out["lambda"] == approx(20, abs=1e-4)
+    assert out["mcpc"]["NSPIN"] == approx(5, abs=1e-4)
+
+def test_capability_cap_nspin():
+    # A's telemetered NSpin capability is 1 MW/min, so it can carry at most 30 min x 1 = 30 MW of NSpin, though
+    # its $1 block has 50 MW. B ($5) supplies the other 10 MW of the 40 MW bought: MCPC 5. C ($10) serves load.
+    units = {"A": unit(50, 100, caps={"NSPIN": 1.0}), "B": unit(50, 100, caps={"NSPIN": 10.0}), "C": unit(10, 500)}
+    out = solve_interval(units, 200, 5000, asin=asin(
+        [("A", 1, "NSPIN", 50, 1), ("B", 1, "NSPIN", 50, 5)], {"NSPIN": [(100, 0, 40)]}))
+    assert out["awards"]["A"]["NSPIN"] == approx(30, abs=1e-4)
+    assert out["awards"]["B"]["NSPIN"] == approx(10, abs=1e-4)
+    assert out["mcpc"]["NSPIN"] == approx(5, abs=1e-4)
+    assert out["lambda"] == approx(10, abs=1e-4)
+
+
+def test_capability_cap_regup_generator():
+    # The cap applies to generator RegUp too: capability 1 MW/min x 5 min = 5 MW from A ($1); B ($5) the other 5.
+    units = {"A": unit(50, 100, caps={"REGUP": 1.0}), "B": unit(50, 100, caps={"REGUP": 10.0}), "C": unit(10, 500)}
+    out = solve_interval(units, 200, 5000, asin=asin(
+        [("A", 1, "REGUP", 50, 1), ("B", 1, "REGUP", 50, 5)], {"REGUP": [(100, 0, 10)]}))
+    assert out["awards"]["A"]["REGUP"] == approx(5, abs=1e-4)
+    assert out["awards"]["B"]["REGUP"] == approx(5, abs=1e-4)
+    assert out["mcpc"]["REGUP"] == approx(5, abs=1e-4)
+
+
+def test_capability_cap_battery_ecrs_and_missing():
+    # Battery A: ECRS capability 2 MW/min -> at most 10 x 2 = 20 MW. B has no capability telemetered (NaN): no
+    # cap row, so its $5 block supplies the other 10 MW of the 30 MW bought. MCPC 5.
+    units = {"A": unit(50, 100, soc=50, soc_min=0, soc_max=100, caps={"ECRS": 2.0}), "B": unit(50, 100),
+             "C": unit(10, 500)}
+    out = solve_interval(units, 200, 5000, asin=asin(
+        [("A", 1, "ECRS", 50, 1), ("B", 1, "ECRS", 50, 5)], {"ECRS": [(100, 0, 30)]}))
+    assert out["awards"]["A"]["ECRS"] == approx(20, abs=1e-4)
+    assert out["awards"]["B"]["ECRS"] == approx(10, abs=1e-4)
+    assert out["mcpc"]["ECRS"] == approx(5, abs=1e-4)
+
+
+def rrs_units():
+    """A, B, C: AS sellers with expensive energy ($50); D ($10) serves the 200 MW load, so lambda = 10."""
+    return {"A": unit(50, 100), "B": unit(50, 100), "C": unit(50, 100), "D": unit(10, 500)}
+
+
+def test_pfr_floor_and_unit_cap():
+    # RRS 40 MW bought. FFR from B at $1 is cheapest, but at least 30 MW must be PFR, at most 20 MW per unit:
+    # A carries 20 PFR ($5), C the other 10 ($8), B the remaining 10 as FFR (the FFR cap, 40 - 30 = 10, binds).
+    # In this dispatch run one more MW of RRS must come from C's PFR (FFR is capped): MCPC = $8. The price
+    # compared with ERCOT comes from the floor-free solve instead (test_pricing_run_breaks_the_floor_tie).
+    out = solve_interval(rrs_units(), 200, 5000, asin=asin(
+        [("A", 1, "RRSPFR", 50, 5), ("B", 1, "RRSFFR", 50, 1), ("C", 1, "RRSPFR", 50, 8)],
+        {"RRS": [(100, 0, 40)]}, pfr={"min": 30, "unit_max": 20}))
+    aw = out["awards"]
+    assert aw["A"]["RRSPFR"] == approx(20, abs=1e-4)
+    assert aw["C"]["RRSPFR"] == approx(10, abs=1e-4)
+    assert aw["B"]["RRS"] == approx(10, abs=1e-4)
+    assert aw["B"]["RRSPFR"] == approx(0, abs=1e-4)
+    assert out["mcpc"]["RRS"] == approx(8, abs=1e-4)
+    assert out["pfr_short"] == approx(0, abs=1e-4)
+    assert out["lambda"] == approx(10, abs=1e-4)
+
+
+def test_pfr_floor_counts_fixed_supply():
+    # 25 MW of PFR comes from resources the model doesn't dispatch (fixed), so only 5 more are needed:
+    # A 5 PFR ($5), B 15 FFR ($1) for the 20 MW of the 45 MW curve not already covered (FFR cap 20 - 5 = 15,
+    # binding). One more MW of RRS would be A's PFR: dispatch-run MCPC $5.
+    out = solve_interval(rrs_units(), 200, 5000, asin=asin(
+        [("A", 1, "RRSPFR", 50, 5), ("B", 1, "RRSFFR", 50, 1)],
+        {"RRS": [(100, 0, 45)]}, fixed={"RRS": 25, "RRSPFR": 25}, pfr={"min": 30, "unit_max": 20}))
+    assert out["awards"]["A"]["RRSPFR"] == approx(5, abs=1e-4)
+    assert out["awards"]["B"]["RRS"] == approx(15, abs=1e-4)
+    assert out["mcpc"]["RRS"] == approx(5, abs=1e-4)
+
+
+def test_pfr_floor_shortfall():
+    # Only A offers PFR and may carry at most 20 MW; the floor needs 30 of the 50 MW room. As an FFR cap the floor
+    # allows at most 50 - 30 = 20 MW of FFR, so the model buys 20 PFR + 20 FFR = 40 of the 50 MW: the RRS curve,
+    # not a penalty, prices the shortage. The run still solves, and pfr_short reports the 10 MW missing.
+    out = solve_interval(rrs_units(), 200, 5000, asin=asin(
+        [("A", 1, "RRSPFR", 50, 5), ("B", 1, "RRSFFR", 50, 1)],
+        {"RRS": [(100, 0, 50)]}, pfr={"min": 30, "unit_max": 20}))
+    assert out["awards"]["A"]["RRSPFR"] == approx(20, abs=1e-4)
+    assert out["awards"]["B"]["RRS"] == approx(20, abs=1e-4)
+    assert out["cleared"]["RRS"] == approx(40, abs=1e-4)
+    assert out["pfr_short"] == approx(10, abs=1e-4)
+
+
+def test_pfr_floor_out_of_reach_drops_ffr():
+    # Sept 15 case: the room (W = 39.99) is 0.01 MW less than the PFR needed (N = 40), so there is no FFR room at
+    # all: FFR offers are dropped, PFR fills the whole room, and pfr_short reports the 0.01 MW.
+    out = solve_interval(rrs_units(), 200, 5000, asin=asin(
+        [("A", 1, "RRSPFR", 50, 5), ("B", 1, "RRSFFR", 50, 1), ("C", 1, "RRSPFR", 50, 8)],
+        {"RRS": [(100, 0, 49.99)]}, fixed={"RRS": 10, "RRSPFR": 0}, pfr={"min": 40, "unit_max": 30}))
+    assert out["awards"]["A"]["RRSPFR"] == approx(30, abs=1e-4)
+    assert out["awards"]["C"]["RRSPFR"] == approx(9.99, abs=1e-4)
+    assert "B" not in out["awards"]                         # FFR offers dropped: B offers nothing else
+    assert out["pfr_short"] == approx(0.01, abs=1e-4)
+
+
+def test_no_ufr_from_dispatched_units():
+    # UFR is a Load Resource service: A's $1 UFR price is dropped (A offers nothing else, so it gets no AS
+    # variables at all) and B's FFR at $5 supplies RRS. MCPC $5.
+    out = solve_interval(rrs_units(), 200, 5000, asin=asin(
+        [("A", 1, "RRSUFR", 50, 1), ("B", 1, "RRSFFR", 50, 5)], {"RRS": [(100, 0, 10)]}))
+    assert "A" not in out["awards"]
+    assert out["awards"]["B"]["RRS"] == approx(10, abs=1e-4)
+    assert out["mcpc"]["RRS"] == approx(5, abs=1e-4)
+
+
+def test_pricing_run_breaks_the_floor_tie():
+    # The tie: RRS curve 40 MW, 10 MW fixed, so 30 MW of room = the 30 MW PFR floor: no FFR room, so B's FFR
+    # offer is dropped from the dispatch run (A 20 PFR at its cap, C 10 PFR). The price comes from the floor-free
+    # solve without the PFR rows, where B's FFR at $1 is the marginal RRS offer: $1, as ERCOT's prices behave.
+    from scedrep.dispatch import solve_with_pricing
+
+    inp = asin([("A", 1, "RRSPFR", 50, 5), ("B", 1, "RRSFFR", 50, 1), ("C", 1, "RRSPFR", 50, 8)],
+               {"RRS": [(100, 0, 40)]}, fixed={"RRS": 10, "RRSPFR": 0}, pfr={"min": 30, "unit_max": 20})
+    out = solve_with_pricing(rrs_units(), 200, 5000, asin=inp)
+    assert out["awards"]["A"]["RRSPFR"] == approx(20, abs=1e-4)
+    assert out["awards"]["C"]["RRSPFR"] == approx(10, abs=1e-4)
+    assert "B" not in out["awards"]                         # FFR dropped: B offers nothing else
+    assert out["pfr_short"] == approx(0, abs=1e-4)
+    assert out["pricing"]["mcpc"]["RRS"] == approx(1, abs=1e-4)
+    assert out["pricing"]["lambda"] == approx(10, abs=1e-4)
+
+
+def test_no_pricing_run_without_pfr_rows():
+    from scedrep.dispatch import solve_with_pricing
+
+    units = {"A": unit(10, 100), "B": unit(20, 100)}
+    out = solve_with_pricing(units, 50, 5000, asin=asin([("A", 1, "REGUP", 30, 5)], {"REGUP": [(100, 0, 10)]}))
+    assert "pricing" not in out

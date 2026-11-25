@@ -21,9 +21,13 @@ def build_interval(gen, ts, esr=None):
     rows = rows[rows["Telemetered Resource Status"].astype(str).str.startswith("ON")]
     # keep only dispatchable rows: HDL > LDL only if its range is meaningful
     rows = rows[rows["HDL"] - rows["LDL"] > 0.1]
-    # Limits the AS constraints need: HSL/LSL (capacity rows) and, for batteries, state of charge.
-    # A column absent from the table (generators have no SOC; small test frames lack HSL) becomes NaN.
-    extra = {"hsl": "HSL", "lsl": "LSL", "soc": "SOC", "soc_min": "Min SOC", "soc_max": "Max SOC"}
+    # Limits the AS constraints need: HSL/LSL (capacity rows), telemetered AS capability in MW/min per product
+    # (award caps) and, for batteries, state of charge. A column absent from the table (generators have no SOC;
+    # small test frames lack HSL) becomes NaN.
+    extra = {"hsl": "HSL", "lsl": "LSL",
+             "cap_REGUP": "AS Capability RegUp", "cap_REGDN": "AS Capability RegDown",
+             "cap_ECRS": "AS Capability ECRS", "cap_NSPIN": "AS Capability NonSpin",
+             "soc": "SOC", "soc_min": "Min SOC", "soc_max": "Max SOC"}
     for col in extra.values():
         if col not in rows.columns:
             rows = rows.assign(**{col: float("nan")})
