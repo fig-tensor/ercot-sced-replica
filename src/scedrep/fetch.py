@@ -127,9 +127,18 @@ def get_as_prices(api, date, cache="data"):
     # Time-zone-aware run times (handles the repeated fall-back hour), keep only this date's runs
     df = lambda_timestamps(df)
     df = df[df["SCED Timestamp"].dt.strftime("%Y-%m-%d") == date]
+    # The archive changed format during 2026: late-July files have one price column, MCPC; by mid-September
+    # it is split into CappedMCPC and UncappedMCPC. A single MCPC is used as the price compared with ERCOT;
+    # whether it was capped isn't stated, so mcpc_uncapped is left empty for those days.
+    if "CappedMCPC" in df.columns:
+        capped, uncapped = df["CappedMCPC"], df["UncappedMCPC"]
+    elif "MCPC" in df.columns:
+        capped, uncapped = df["MCPC"], float("nan")
+    else:
+        raise ValueError(f"no MCPC column in the NP6-332-CD archive for {date}: columns {list(df.columns)}")
     out = df[["SCED Timestamp", "ASType"]].assign(
-        mcpc=pd.to_numeric(df["CappedMCPC"], errors="coerce"),
-        mcpc_uncapped=pd.to_numeric(df["UncappedMCPC"], errors="coerce"),
+        mcpc=pd.to_numeric(capped, errors="coerce"),
+        mcpc_uncapped=pd.to_numeric(uncapped, errors="coerce"),
     ).reset_index(drop=True)
 
     os.makedirs(cache, exist_ok=True)
