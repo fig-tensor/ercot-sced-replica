@@ -9,6 +9,12 @@ from pyomo.contrib.solver.solvers.highs import Highs
 DT = 5 / 60  # SCED interval length in hours
 UP = ("REGUP", "RRS", "ECRS", "NSPIN")  # up-products: share headroom above p
 RAMP = 5 / 7  # regulation ramp factor in the ramp rows (ERCOT training material)
+# Ramp-minute rows: award of product k <= RAMP_MINUTES[k] x ramp rate (MW/min). In ERCOT's own awards
+# (Sept 15-21) award / ramp rate piles up at exactly these minutes. Batteries get all four rows; generators
+# only RegDn and NSpin, the products where ERCOT's awards respect the row in >= 99% of unit-runs (generator
+# RegUp 40%, ECRS 96%: the disclosed ramp rate is not the one ERCOT uses for those).
+RAMP_MINUTES = {"REGUP": 5, "REGDN": 5, "ECRS": 10, "NSPIN": 30}
+RAMP_GEN = ("REGDN", "NSPIN")
 BACKEND = "piqp"  # default solver for solve_interval: "piqp" (scedrep.qp, interior point) or "highs" (Pyomo + HiGHS)
 PIQP_STRICT = {"max_iter": 1000, "eps_primal_inf": 1e-8}  # more iterations, stricter infeasibility detection
 
@@ -52,6 +58,7 @@ def as_terms(units, asin):
       by_block  {(u, o, b): [keys]}      products offered by each block
       as_units  units that offer AS (they get capacity and ramp rows)
       hsl, lsl  {u: MW}                  limits for the capacity rows (see below)
+      ramp_cap  {(u, k): MW}             ramp-minute rows: award of k to u <= this
       seg       {(k, i): (P, s, w)}      demand segments
       fixed     {k: MW}                  F_k
     """
@@ -77,9 +84,19 @@ def as_terms(units, asin):
     # dispatched unit, so the rows stay feasible when a derate puts HSL below LDL (TIMPP_AGR2, 2026-09-16).
     hsl = {u: max(units[u]["hsl"], units[u]["hdl"]) for u in as_units}
     lsl = {u: min(units[u]["lsl"], units[u]["hdl"]) for u in as_units}
+    # Ramp-minute rows (see RAMP_MINUTES). A unit is a battery if it has a state of charge. No row where the
+    # unit doesn't offer the product or has no usable ramp rate (missing or <= 0).
+    ramp_cap = {}
+    for u in as_units:
+        battery = not math.isnan(units[u].get("soc", math.nan))
+        for k in RAMP_MINUTES if battery else RAMP_GEN:
+            rr = units[u].get("rrd" if k == "REGDN" else "rru", math.nan)
+            if (u, k) in by_award and rr > 0:  # NaN > 0 is False
+                ramp_cap[u, k] = RAMP_MINUTES[k] * rr
     seg = {(k, i): sw for k in K for i, sw in enumerate(demand[k])}
     return {"K": K, "price": price, "Q": Q, "by_award": by_award, "by_block": by_block,
-            "as_units": as_units, "hsl": hsl, "lsl": lsl, "seg": seg, "fixed": asin.get("fixed", {})}
+            "as_units": as_units, "hsl": hsl, "lsl": lsl, "ramp_cap": ramp_cap, "seg": seg,
+            "fixed": asin.get("fixed", {})}
 
 
 
@@ -129,6 +146,10 @@ def _add_as(m, units, asin, durations):
     m.cap_lo = pyo.Constraint(m.AU, rule=lambda m, u: m.p[u] - a(u, "REGDN") >= lsl[u])
     m.ramp_hi = pyo.Constraint(m.AU, rule=lambda m, u: m.p[u] + RAMP * a(u, "REGUP") <= units[u]["hdl"])
     m.ramp_lo = pyo.Constraint(m.AU, rule=lambda m, u: m.p[u] - RAMP * a(u, "REGDN") >= units[u]["ldl"])
+    # Ramp-minute rows: a[u,k] <= minutes_k x ramp rate
+    ramp_cap = t["ramp_cap"]
+    m.RMIN = pyo.Set(initialize=list(ramp_cap), dimen=2)
+    m.ramp_min = pyo.Constraint(m.RMIN, rule=lambda m, u, k: a(u, k) <= ramp_cap[u, k])
 
     # Battery duration: energy out this interval + energy to sustain each up-award for d_k hours
     # <= stored energy above the minimum; mirror on the charging side for RegDn

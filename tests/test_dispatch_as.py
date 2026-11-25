@@ -9,11 +9,12 @@ from scedrep.dispatch import solve_interval
 NAN = math.nan
 
 
-def unit(price, hdl, hsl=None, lsl=0.0, ldl=0.0, soc=NAN, soc_min=NAN, soc_max=NAN):
-    """A unit with a flat energy offer `price` from ldl to hdl MW (hsl defaults to hdl)."""
+def unit(price, hdl, hsl=None, lsl=0.0, ldl=0.0, soc=NAN, soc_min=NAN, soc_max=NAN, rru=NAN, rrd=NAN):
+    """A unit with a flat energy offer `price` from ldl to hdl MW (hsl defaults to hdl).
+    rru, rrd: ramp rates up/down in MW/min (NaN: no ramp-minute rows). A unit with soc is a battery."""
     return {"curve": [(ldl, price), (hdl, price)], "ldl": ldl, "hdl": hdl, "bp": 0.0,
-            "hsl": hdl if hsl is None else hsl, "lsl": lsl, "soc": soc, "soc_min": soc_min, "soc_max": soc_max}
-
+            "hsl": hdl if hsl is None else hsl, "lsl": lsl, "soc": soc, "soc_min": soc_min, "soc_max": soc_max,
+            "rru": rru, "rrd": rrd}
 
 def blocks(*rows):
     """AS offer blocks: rows of (unit, block, product, MW, price), all from ONRES rows (REGDN from REGDN)."""
@@ -147,3 +148,36 @@ def test_capacity_row_uses_hdl_above_hsl():
     assert out["awards"]["B"]["NSPIN"] == approx(1, abs=1e-4)
     assert out["lambda"] == approx(20, abs=1e-4)
     assert out["mcpc"]["NSPIN"] == approx(5, abs=1e-4)
+
+def test_ramp_minutes_generator_nspin():
+    # Generator A ramps 1 MW/min, so it can carry at most 30 min x 1 = 30 MW of NSpin, though its $1 block has
+    # 50 MW. B ($5) supplies the other 10 MW of the 40 MW bought: MCPC 5. C ($10) serves the load.
+    units = {"A": unit(50, 100, rru=1.0), "B": unit(50, 100, rru=10.0), "C": unit(10, 500)}
+    out = solve_interval(units, 200, 5000, asin=asin(
+        [("A", 1, "NSPIN", 50, 1), ("B", 1, "NSPIN", 50, 5)], {"NSPIN": [(100, 0, 40)]}))
+    assert out["awards"]["A"]["NSPIN"] == approx(30, abs=1e-4)
+    assert out["awards"]["B"]["NSPIN"] == approx(10, abs=1e-4)
+    assert out["mcpc"]["NSPIN"] == approx(5, abs=1e-4)
+    assert out["lambda"] == approx(10, abs=1e-4)
+
+
+def test_ramp_minutes_generator_regup_exempt():
+    # Generator RegUp gets no ramp-minute row (ERCOT's own awards break it in 60% of unit-runs), so A's slow
+    # ramp (1 MW/min, 5 min -> 5 MW) doesn't bind: A supplies all 10 MW of RegUp at $1.
+    units = {"A": unit(50, 100, rru=1.0), "B": unit(50, 100, rru=10.0), "C": unit(10, 500)}
+    out = solve_interval(units, 200, 5000, asin=asin(
+        [("A", 1, "REGUP", 50, 1), ("B", 1, "REGUP", 50, 5)], {"REGUP": [(100, 0, 10)]}))
+    assert out["awards"]["A"]["REGUP"] == approx(10, abs=1e-4)
+    assert out["mcpc"]["REGUP"] == approx(1, abs=1e-4)
+
+
+def test_ramp_minutes_battery_ecrs():
+    # Battery A (it has a state of charge; no duration rows here) ramps 2 MW/min: ECRS <= 10 min x 2 = 20 MW.
+    # B ($5) supplies the other 10 MW of the 30 MW bought: MCPC 5.
+    units = {"A": unit(50, 100, rru=2.0, soc=50, soc_min=0, soc_max=100), "B": unit(50, 100, rru=10.0),
+             "C": unit(10, 500)}
+    out = solve_interval(units, 200, 5000, asin=asin(
+        [("A", 1, "ECRS", 50, 1), ("B", 1, "ECRS", 50, 5)], {"ECRS": [(100, 0, 30)]}))
+    assert out["awards"]["A"]["ECRS"] == approx(20, abs=1e-4)
+    assert out["awards"]["B"]["ECRS"] == approx(10, abs=1e-4)
+    assert out["mcpc"]["ECRS"] == approx(5, abs=1e-4)
