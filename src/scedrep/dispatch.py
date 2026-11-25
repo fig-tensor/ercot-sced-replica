@@ -9,12 +9,10 @@ from pyomo.contrib.solver.solvers.highs import Highs
 DT = 5 / 60  # SCED interval length in hours
 UP = ("REGUP", "RRS", "ECRS", "NSPIN")  # up-products: share headroom above p
 RAMP = 5 / 7  # regulation ramp factor in the ramp rows (ERCOT training material)
-# Ramp-minute rows: award of product k <= RAMP_MINUTES[k] x ramp rate (MW/min). In ERCOT's own awards
-# (Sept 15-21) award / ramp rate piles up at exactly these minutes. Batteries get all four rows; generators
-# only RegDn and NSpin, the products where ERCOT's awards respect the row in >= 99% of unit-runs (generator
-# RegUp 40%, ECRS 96%: the disclosed ramp rate is not the one ERCOT uses for those).
+# Capability caps: award of product k <= RAMP_MINUTES[k] x the unit's telemetered AS capability for k (MW/min).
+# Scored against ERCOT's own awards (Sept 15-21, ~650,000 awards): never broken for any product or resource type,
+# binding tens of thousands of times; minutes x disclosed ramp rate was broken thousands of times.
 RAMP_MINUTES = {"REGUP": 5, "REGDN": 5, "ECRS": 10, "NSPIN": 30}
-RAMP_GEN = ("REGDN", "NSPIN")
 # RRS sub-types the model can award: PFR and FFR. UFR (under-frequency relay) is a Load Resource service; the
 # model doesn't dispatch Load Resources (their awards are fixed supply), and generators and batteries got no
 # UFR award in Sept 15-21.
@@ -65,7 +63,7 @@ def as_terms(units, asin):
       by_block  {(u, o, b): [keys]}      products offered by each block
       as_units  units that offer AS (they get capacity and ramp rows)
       hsl, lsl  {u: MW}                  limits for the capacity rows (see below)
-      award_cap {(u, k): MW}             award of k to u <= this (ramp-minute rows; PFR per-resource cap)
+      award_cap {(u, k): MW}             award of k to u <= this (capability caps; PFR per-resource cap)
       pfr       {"min", "unit_max"} or None   RRS-PFR floor and per-resource cap (None: no PFR rows)
       seg       {(k, i): (P, s, w)}      demand segments
       fixed     {k: MW}                  F_k
@@ -99,15 +97,14 @@ def as_terms(units, asin):
     # dispatched unit, so the rows stay feasible when a derate puts HSL below LDL (TIMPP_AGR2, 2026-09-16).
     hsl = {u: max(units[u]["hsl"], units[u]["hdl"]) for u in as_units}
     lsl = {u: min(units[u]["lsl"], units[u]["hdl"]) for u in as_units}
-    # Award caps a[u,k] <= cap. Ramp-minute rows (see RAMP_MINUTES): a unit is a battery if it has a state of
-    # charge; no row where the unit doesn't offer the product or has no usable ramp rate (missing or <= 0).
+    # Award caps a[u,k] <= cap. Capability caps (see RAMP_MINUTES), for every unit; no row where the unit doesn't
+    # offer the product or has no telemetered capability (NaN). A capability of 0 caps the award at 0.
     award_cap = {}
     for u in as_units:
-        battery = not math.isnan(units[u].get("soc", math.nan))
-        for k in RAMP_MINUTES if battery else RAMP_GEN:
-            rr = units[u].get("rrd" if k == "REGDN" else "rru", math.nan)
-            if (u, k) in by_award and rr > 0:  # NaN > 0 is False
-                award_cap[u, k] = RAMP_MINUTES[k] * rr
+        for k, minutes in RAMP_MINUTES.items():
+            cap = units[u].get(f"cap_{k}", math.nan)
+            if (u, k) in by_award and cap >= 0:  # NaN >= 0 is False
+                award_cap[u, k] = minutes * cap
     # PFR per-resource cap
     pfr = asin.get("pfr") if "RRS" in K else None
     if pfr:
@@ -128,7 +125,7 @@ def _add_as(m, units, asin, durations):
     Variables: x[u,o,b,k] >= 0, MW of offer block (u, o, b) awarded for product k; y[k,i] in [0, w],
     MW filled on demand segment i of product k. Awards a[u,k] = sum of x are expressions.
     Rows: AS balance per product (dual = MCPC), block capacity, capacity and ramp rows for units that
-    offer AS, award caps (ramp minutes, PFR per resource), the PFR floor, and battery duration rows if
+    offer AS, award caps (minutes x capability, PFR per resource), the PFR floor, and battery duration rows if
     durations = {product: hours} is given.
     """
     t = as_terms(units, asin)
@@ -168,7 +165,7 @@ def _add_as(m, units, asin, durations):
     m.cap_lo = pyo.Constraint(m.AU, rule=lambda m, u: m.p[u] - a(u, "REGDN") >= lsl[u])
     m.ramp_hi = pyo.Constraint(m.AU, rule=lambda m, u: m.p[u] + RAMP * a(u, "REGUP") <= units[u]["hdl"])
     m.ramp_lo = pyo.Constraint(m.AU, rule=lambda m, u: m.p[u] - RAMP * a(u, "REGDN") >= units[u]["ldl"])
-    # Award caps: a[u,k] <= minutes_k x ramp rate; PFR per resource
+    # Award caps: a[u,k] <= minutes_k x capability; PFR per resource
     award_cap = t["award_cap"]
     m.CAPK = pyo.Set(initialize=list(award_cap), dimen=2)
     m.award_cap = pyo.Constraint(m.CAPK, rule=lambda m, u, k: a(u, k) <= award_cap[u, k])
@@ -299,3 +296,20 @@ def solve_with_fallback(units, load, penalty, network=(), asin=None, durations=N
         except (NoOptimalSolutionError, NoDualsError, SolveError) as e:
             error = e
     raise error
+
+
+def solve_with_pricing(units, load, penalty, network=(), asin=None, durations=None):
+    """A dispatch run and, when the RRS-PFR rows are in, a separate pricing run without them.
+
+    ERCOT's awards obey the PFR floor exactly (total PFR = 1,377 MW in nearly every run, Sept 15-21), yet its
+    RRS price matches a model run without the floor (Sept 15 and 18: median |error| $0.004, no run off by more
+    than $1), where the dispatch run's price can carry the floor's dual (down to -$10,000 when the floor and the
+    RRS curve's end tie). So: quantities (dispatch, awards) from the dispatch run with the PFR rows; prices from a
+    pricing run without them, returned as out["pricing"] = {"lambda", "mu", "mcpc", "solver"}. The dispatch
+    run's own prices stay in out. Both runs go through solve_with_fallback.
+    """
+    out = solve_with_fallback(units, load, penalty, network, asin=asin, durations=durations)
+    if asin is not None and asin.get("pfr"):
+        pr = solve_with_fallback(units, load, penalty, network, asin={**asin, "pfr": None}, durations=durations)
+        out["pricing"] = {"lambda": pr["lambda"], "mu": pr["mu"], "mcpc": pr["mcpc"], "solver": pr["solver"]}
+    return out

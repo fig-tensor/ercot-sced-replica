@@ -35,6 +35,11 @@ def test_run_day_with_as():
     assert row["cleared_REGUP"] == approx(50, abs=1e-3)
     assert row["award_tot_REGUP"] == approx(50)
     assert row["award_err_REGUP"] == approx(0, abs=1e-3)   # model awards match ERCOT's
+    # 2026 run: the PFR rows are in (no PFR offered, so the floor is short), so a pricing run without them
+    # is solved too; here it prices the same as the dispatch run
+    assert row["pfr_short"] > 0
+    assert row["model_lambda_pricing"] == approx(10, abs=1e-3)
+    assert row["mcpcpr_REGUP"] == approx(10, abs=1e-3)
 
 
 def test_compare_as():
@@ -45,3 +50,7 @@ def test_compare_as():
     out = compare_as(res, mcpc).set_index("ASType")
     assert out.loc["REGUP", "err"] == approx(0.5)
     assert out.loc["RRS", "err"] == approx(0.0)
+    # the pricing run's columns, by prefix
+    pr = compare_as(res.rename(columns={"mcpc_REGUP": "mcpcpr_REGUP", "mcpc_RRS": "mcpcpr_RRS"}), mcpc,
+                    prefix="mcpcpr_").set_index("ASType")
+    assert pr.loc["REGUP", "err"] == approx(0.5)
