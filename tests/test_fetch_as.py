@@ -35,6 +35,30 @@ def test_get_as_prices_parses_filters_and_caches(tmp_path):
     assert api.calls == 1
 
 
+def test_get_as_prices_older_single_column(tmp_path):
+    # Late-July 2026 archive files have one MCPC column instead of CappedMCPC / UncappedMCPC
+    raw = pd.DataFrame({
+        "SCEDTimestamp": ["07/27/2026 23:55:18", "07/27/2026 23:55:18"],
+        "RepeatedHourFlag": ["N", "N"],
+        "ASType": ["ECRS", "NSPIN"],
+        "MCPC": [0.14, 0.57],
+    })
+    out = get_as_prices(FakeArchive(raw), "2026-07-27", cache=tmp_path).set_index("ASType")
+    assert out.loc["NSPIN", "mcpc"] == 0.57             # the single price is the one compared with ERCOT
+    assert out["mcpc_uncapped"].isna().all()           # capped or not isn't stated: left empty
+
+
+def test_get_as_prices_unknown_format_raises(tmp_path):
+    raw = pd.DataFrame({"SCEDTimestamp": ["07/27/2026 23:55:18"], "RepeatedHourFlag": ["N"], "ASType": ["ECRS"],
+                        "Price": [0.14]})
+    try:
+        get_as_prices(FakeArchive(raw), "2026-07-27", cache=tmp_path)
+    except ValueError as e:
+        assert "no MCPC column" in str(e)
+    else:
+        raise AssertionError("expected ValueError")
+
+
 def test_get_as_demand_curves_keeps_latest_posting(tmp_path):
     rows = []
     # Hour 1 RRS posted twice: the later posting (prices 200) must win; hour 1 ECRS posted once
