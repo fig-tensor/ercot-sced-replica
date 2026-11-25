@@ -194,8 +194,9 @@ def rrs_units():
 
 def test_pfr_floor_and_unit_cap():
     # RRS 40 MW bought. FFR from B at $1 is cheapest, but at least 30 MW must be PFR, at most 20 MW per unit:
-    # A carries 20 PFR ($5), C the other 10 ($8), B the remaining 10 as FFR. One more MW of RRS would come from
-    # B: MCPC = $1. (The floor's own price, $8 - $1 = $7, is not part of the RRS MCPC.)
+    # A carries 20 PFR ($5), C the other 10 ($8), B the remaining 10 as FFR (the FFR cap, 40 - 30 = 10, binds).
+    # In this dispatch run one more MW of RRS must come from C's PFR (FFR is capped): MCPC = $8. The price
+    # compared with ERCOT comes from the floor-free solve instead (test_pricing_run_breaks_the_floor_tie).
     out = solve_interval(rrs_units(), 200, 5000, asin=asin(
         [("A", 1, "RRSPFR", 50, 5), ("B", 1, "RRSFFR", 50, 1), ("C", 1, "RRSPFR", 50, 8)],
         {"RRS": [(100, 0, 40)]}, pfr={"min": 30, "unit_max": 20}))
@@ -204,31 +205,46 @@ def test_pfr_floor_and_unit_cap():
     assert aw["C"]["RRSPFR"] == approx(10, abs=1e-4)
     assert aw["B"]["RRS"] == approx(10, abs=1e-4)
     assert aw["B"]["RRSPFR"] == approx(0, abs=1e-4)
-    assert out["mcpc"]["RRS"] == approx(1, abs=1e-4)
+    assert out["mcpc"]["RRS"] == approx(8, abs=1e-4)
     assert out["pfr_short"] == approx(0, abs=1e-4)
     assert out["lambda"] == approx(10, abs=1e-4)
 
 
 def test_pfr_floor_counts_fixed_supply():
     # 25 MW of PFR comes from resources the model doesn't dispatch (fixed), so only 5 more are needed:
-    # A 5 PFR ($5), B 15 FFR ($1) for the 20 MW of the 45 MW curve not already covered. MCPC $1.
+    # A 5 PFR ($5), B 15 FFR ($1) for the 20 MW of the 45 MW curve not already covered (FFR cap 20 - 5 = 15,
+    # binding). One more MW of RRS would be A's PFR: dispatch-run MCPC $5.
     out = solve_interval(rrs_units(), 200, 5000, asin=asin(
         [("A", 1, "RRSPFR", 50, 5), ("B", 1, "RRSFFR", 50, 1)],
         {"RRS": [(100, 0, 45)]}, fixed={"RRS": 25, "RRSPFR": 25}, pfr={"min": 30, "unit_max": 20}))
     assert out["awards"]["A"]["RRSPFR"] == approx(5, abs=1e-4)
     assert out["awards"]["B"]["RRS"] == approx(15, abs=1e-4)
-    assert out["mcpc"]["RRS"] == approx(1, abs=1e-4)
+    assert out["mcpc"]["RRS"] == approx(5, abs=1e-4)
 
 
 def test_pfr_floor_shortfall():
-    # Only A offers PFR and may carry at most 20 MW: the floor (30) is 10 MW short, priced at the penalty
-    # rather than making the run infeasible. B fills the rest of the 50 MW as FFR.
+    # Only A offers PFR and may carry at most 20 MW; the floor needs 30 of the 50 MW room. As an FFR cap the floor
+    # allows at most 50 - 30 = 20 MW of FFR, so the model buys 20 PFR + 20 FFR = 40 of the 50 MW: the RRS curve,
+    # not a penalty, prices the shortage. The run still solves, and pfr_short reports the 10 MW missing.
     out = solve_interval(rrs_units(), 200, 5000, asin=asin(
         [("A", 1, "RRSPFR", 50, 5), ("B", 1, "RRSFFR", 50, 1)],
         {"RRS": [(100, 0, 50)]}, pfr={"min": 30, "unit_max": 20}))
     assert out["awards"]["A"]["RRSPFR"] == approx(20, abs=1e-4)
+    assert out["awards"]["B"]["RRS"] == approx(20, abs=1e-4)
+    assert out["cleared"]["RRS"] == approx(40, abs=1e-4)
     assert out["pfr_short"] == approx(10, abs=1e-4)
-    assert out["awards"]["B"]["RRS"] == approx(30, abs=1e-4)
+
+
+def test_pfr_floor_out_of_reach_drops_ffr():
+    # Sept 15 case: the room (W = 39.99) is 0.01 MW less than the PFR needed (N = 40), so there is no FFR room at
+    # all: FFR offers are dropped, PFR fills the whole room, and pfr_short reports the 0.01 MW.
+    out = solve_interval(rrs_units(), 200, 5000, asin=asin(
+        [("A", 1, "RRSPFR", 50, 5), ("B", 1, "RRSFFR", 50, 1), ("C", 1, "RRSPFR", 50, 8)],
+        {"RRS": [(100, 0, 49.99)]}, fixed={"RRS": 10, "RRSPFR": 0}, pfr={"min": 40, "unit_max": 30}))
+    assert out["awards"]["A"]["RRSPFR"] == approx(30, abs=1e-4)
+    assert out["awards"]["C"]["RRSPFR"] == approx(9.99, abs=1e-4)
+    assert "B" not in out["awards"]                         # FFR offers dropped: B offers nothing else
+    assert out["pfr_short"] == approx(0.01, abs=1e-4)
 
 
 def test_no_ufr_from_dispatched_units():
@@ -242,10 +258,9 @@ def test_no_ufr_from_dispatched_units():
 
 
 def test_pricing_run_breaks_the_floor_tie():
-    # The tie: RRS curve 40 MW, 10 MW fixed, so 30 MW of room = the 30 MW PFR floor. Quantities come from the
-    # dispatch run (A 20 PFR at its cap, C 10 PFR, B no FFR); the price from the pricing run without the PFR rows,
-    # where B's FFR at $1 is the marginal RRS offer: $1. The dispatch run's own RRS price is not unique here
-    # (PIQP lands far below $1), which is why prices come from the pricing run.
+    # The tie: RRS curve 40 MW, 10 MW fixed, so 30 MW of room = the 30 MW PFR floor: no FFR room, so B's FFR
+    # offer is dropped from the dispatch run (A 20 PFR at its cap, C 10 PFR). The price comes from the floor-free
+    # solve without the PFR rows, where B's FFR at $1 is the marginal RRS offer: $1, as ERCOT's prices behave.
     from scedrep.dispatch import solve_with_pricing
 
     inp = asin([("A", 1, "RRSPFR", 50, 5), ("B", 1, "RRSFFR", 50, 1), ("C", 1, "RRSPFR", 50, 8)],
@@ -253,7 +268,7 @@ def test_pricing_run_breaks_the_floor_tie():
     out = solve_with_pricing(rrs_units(), 200, 5000, asin=inp)
     assert out["awards"]["A"]["RRSPFR"] == approx(20, abs=1e-4)
     assert out["awards"]["C"]["RRSPFR"] == approx(10, abs=1e-4)
-    assert out["awards"]["B"]["RRS"] == approx(0, abs=1e-4)
+    assert "B" not in out["awards"]                         # FFR dropped: B offers nothing else
     assert out["pfr_short"] == approx(0, abs=1e-4)
     assert out["pricing"]["mcpc"]["RRS"] == approx(1, abs=1e-4)
     assert out["pricing"]["lambda"] == approx(10, abs=1e-4)

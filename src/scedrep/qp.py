@@ -15,7 +15,6 @@ import scipy.sparse as sp
 
 from scedrep.dispatch import (
     DT,
-    PFR_PENALTY,
     RAMP,
     UP,
     SolveError,
@@ -66,8 +65,6 @@ def solve_interval_piqp(units, load, penalty, network=(), verbose=False, asin=No
             col["xa", *key] = len(col)
         for key in t["seg"]:
             col["y", *key] = len(col)
-        if t["pfr"]:
-            col["pfr_short"] = len(col)                       # MW short of the PFR floor
     n = len(col)
 
     # ---- objective 1/2 z'Pz + c'z (P diagonal) and bounds ----
@@ -88,8 +85,6 @@ def solve_interval_piqp(units, load, penalty, network=(), verbose=False, asin=No
         for (k, i), (P_, s_, w_) in t["seg"].items():
             j = col["y", k, i]
             Pd[j], cost[j], ub[j] = -s_, -P_, w_              # minus the concave value P*y + s*y^2/2
-        if t["pfr"]:
-            cost[col["pfr_short"]] = PFR_PENALTY              # shortfall priced at PFR_PENALTY
 
     # ---- equalities A z = b ----
     eq = _Rows()
@@ -141,12 +136,12 @@ def solve_interval_piqp(units, load, penalty, network=(), verbose=False, asin=No
 
         for (u, k), cap in t["award_cap"].items():           # award caps: ramp minutes, PFR per resource
             ineq.add(award(u, k), cap)
-        if t["pfr"]:                                          # PFR floor: -sum PFR - short <= F_PFR - min
+        if t["ffr_cap"] is not None:                          # PFR floor as an FFR cap: sum FFR <= ffr_cap
             coefs = {}
             for u in t["as_units"]:
-                coefs.update(award(u, "RRSPFR", -1.0))
-            coefs[col["pfr_short"]] = -1.0
-            ineq.add(coefs, t["fixed"].get("RRSPFR", 0.0) - t["pfr"]["min"])
+                coefs.update(award(u, "RRSFFR"))
+            if coefs:
+                ineq.add(coefs, t["ffr_cap"])
 
     # ---- solve ----
     A, b = eq.matrix(n)
@@ -175,6 +170,7 @@ def solve_interval_piqp(units, load, penalty, network=(), verbose=False, asin=No
         out["awards"] = {u: {k: float(sum(z[col["xa", *key]] for key in t["by_award"].get((u, k), [])))
                              for k in ks} for u in t["as_units"]}
         out["cleared"] = {k: float(sum(z[col["y", k, i]] for (kk, i) in t["seg"] if kk == k)) for k in t["K"]}
-        if t["pfr"]:
-            out["pfr_short"] = float(z[col["pfr_short"]])     # MW short of the PFR floor
+        if t["pfr"]:                                          # MW short of the PFR floor (N - sum PFR), 0 if met
+            got = sum(aw["RRSPFR"] for aw in out["awards"].values())
+            out["pfr_short"] = max(0.0, t["pfr"]["need"] - got)
     return out

@@ -17,7 +17,13 @@ RAMP_MINUTES = {"REGUP": 5, "REGDN": 5, "ECRS": 10, "NSPIN": 30}
 # model doesn't dispatch Load Resources (their awards are fixed supply), and generators and batteries got no
 # UFR award in Sept 15-21.
 RRS_MODEL_SUB = ("RRSPFR", "RRSFFR")
-PFR_PENALTY = 10_000.0  # $/MW short of the PFR floor. ERCOT doesn't publish one; above every AS curve cap
+# The RRS-PFR floor is imposed as a cap on FFR, not as a floor row with a penalised shortfall: with W = RRS room
+# for the model's units (curve width - fixed RRS) and N = PFR they must carry (floor - fixed PFR),
+#   sum_u PFR >= N   <=>   sum_u FFR <= W - N     when the RRS curve is bought in full (it was in every run checked).
+# The floor row needed a shortfall slack with a $10,000 penalty; that coefficient, and floors tied with (or 0.01 MW
+# beyond) the curve's end, stalled PIQP on 20 runs of Sept 15-21. If PFR can't fill W, the model now buys less RRS
+# and the RRS demand curve prices the shortage. pfr_short in the output reports N - sum PFR when positive.
+FFR_TOL = 0.1  # MW: FFR room below this -> FFR offers dropped (no row a <= 0, which leaves no interior)
 BACKEND = "piqp"  # default solver for solve_interval: "piqp" (scedrep.qp, interior point) or "highs" (Pyomo + HiGHS)
 PIQP_STRICT = {"max_iter": 1000, "eps_primal_inf": 1e-8}  # more iterations, stricter infeasibility detection
 
@@ -64,7 +70,9 @@ def as_terms(units, asin):
       as_units  units that offer AS (they get capacity and ramp rows)
       hsl, lsl  {u: MW}                  limits for the capacity rows (see below)
       award_cap {(u, k): MW}             award of k to u <= this (capability caps; PFR per-resource cap)
-      pfr       {"min", "unit_max"} or None   RRS-PFR floor and per-resource cap (None: no PFR rows)
+      pfr       {"min", "unit_max", "need"} or None   RRS-PFR floor, per-resource cap, and need = N (None: no PFR
+                                         rows)
+      ffr_cap   MW or None               sum of FFR awards <= this (None: no row)
       seg       {(k, i): (P, s, w)}      demand segments
       fixed     {k: MW}                  F_k
     """
@@ -76,6 +84,18 @@ def as_terms(units, asin):
     keep = blk["Resource Name"].isin(units.keys()) & blk["product"].isin(K)
     keep &= (blk["product"] != "RRS") | blk["sub"].isin(RRS_MODEL_SUB)  # no UFR for dispatched units
     blk = blk[keep]
+    # RRS-PFR floor as an FFR cap (see FFR_TOL)
+    pfr = asin.get("pfr") if "RRS" in K else None
+    ffr_cap = None
+    if pfr:
+        fixed = asin.get("fixed", {})
+        room = sum(w for (_, _, w) in demand["RRS"]) - fixed.get("RRS", 0.0)   # W
+        need = pfr["min"] - fixed.get("RRSPFR", 0.0)                            # N
+        ffr_cap = max(0.0, room - need)
+        if ffr_cap < FFR_TOL:
+            blk = blk[blk["sub"] != "RRSFFR"]  # no FFR room: drop the offers rather than cap them at 0
+            ffr_cap = None
+        pfr = {**pfr, "need": need}
     cols = [blk["Resource Name"], blk["Offer Type"], blk["block"], blk["sub"]]
     price = {(u, o, int(b), s): float(pr) for u, o, b, s, pr in zip(*cols, blk["price"], strict=True)}
     Q = {(u, o, int(b)): float(q) for u, o, b, q in zip(*cols[:3], blk["mw"], strict=True)}
@@ -83,8 +103,8 @@ def as_terms(units, asin):
     for key in price:
         u, s = key[0], key[3]
         by_award[u, "RRS" if s in RRS_MODEL_SUB else s].append(key)  # sub-types add up to RRS
-        if s == "RRSPFR":
-            by_award[u, "RRSPFR"].append(key)
+        if s in RRS_MODEL_SUB:
+            by_award[u, s].append(key)  # each sub-type alone too: (u, "RRSPFR"), (u, "RRSFFR")
         by_block[key[:3]].append(key)
     as_units = sorted({key[0] for key in price})
     for u in as_units:
@@ -106,15 +126,14 @@ def as_terms(units, asin):
             if (u, k) in by_award and cap >= 0:  # NaN >= 0 is False
                 award_cap[u, k] = minutes * cap
     # PFR per-resource cap
-    pfr = asin.get("pfr") if "RRS" in K else None
     if pfr:
         for u in as_units:
             if (u, "RRSPFR") in by_award:
                 award_cap[u, "RRSPFR"] = pfr["unit_max"]
     seg = {(k, i): sw for k in K for i, sw in enumerate(demand[k])}
     return {"K": K, "price": price, "Q": Q, "by_award": by_award, "by_block": by_block,
-            "as_units": as_units, "hsl": hsl, "lsl": lsl, "award_cap": award_cap, "pfr": pfr, "seg": seg,
-            "fixed": asin.get("fixed", {})}
+            "as_units": as_units, "hsl": hsl, "lsl": lsl, "award_cap": award_cap, "pfr": pfr, "ffr_cap": ffr_cap,
+            "seg": seg, "fixed": asin.get("fixed", {})}
 
 
 
@@ -170,13 +189,11 @@ def _add_as(m, units, asin, durations):
     m.CAPK = pyo.Set(initialize=list(award_cap), dimen=2)
     m.award_cap = pyo.Constraint(m.CAPK, rule=lambda m, u, k: a(u, k) <= award_cap[u, k])
 
-    # PFR floor: sum_u PFR awards + fixed PFR + shortfall >= minimum, shortfall priced at PFR_PENALTY
-    pfr_obj = 0
-    if t["pfr"]:
-        m.pfr_short = pyo.Var(within=pyo.NonNegativeReals)
-        m.pfr_floor = pyo.Constraint(expr=sum(a(u, "RRSPFR") for u in as_units) + fixed.get("RRSPFR", 0.0)
-                                     + m.pfr_short >= t["pfr"]["min"])
-        pfr_obj = PFR_PENALTY * m.pfr_short
+    # PFR floor as an FFR cap: sum_u FFR awards <= ffr_cap
+    if t["ffr_cap"] is not None:
+        ffr = sum(a(u, "RRSFFR") for u in as_units)
+        if not isinstance(ffr, (int, float)):  # some FFR on offer
+            m.ffr_cap = pyo.Constraint(expr=ffr <= t["ffr_cap"])
 
     # Battery duration: energy out this interval + energy to sustain each up-award for d_k hours
     # <= stored energy above the minimum; mirror on the charging side for RegDn
@@ -192,8 +209,8 @@ def _add_as(m, units, asin, durations):
     # Objective part: offer cost of awards minus the value of AS bought
     cost = sum(price[key] * m.x_as[key] for key in price)
     value = sum(seg[k, i][0] * m.y[k, i] + 0.5 * seg[k, i][1] * m.y[k, i] ** 2 for (k, i) in seg)
-    m._as = {"a": a, "as_units": as_units, "K": K, "pfr": bool(t["pfr"])}
-    return cost - value + pfr_obj
+    m._as = {"a": a, "as_units": as_units, "K": K, "pfr": t["pfr"]}
+    return cost - value
 
 
 def solve_interval(units, load, penalty, network=(), tee=False, asin=None, durations=None, highs_options=None,
@@ -271,8 +288,9 @@ def solve_interval(units, load, penalty, network=(), tee=False, asin=None, durat
         ks = K + ["RRSPFR"] if m._as["pfr"] else K  # PFR awards reported alongside the products
         out["awards"] = {u: {k: pyo.value(a(u, k)) for k in ks} for u in m._as["as_units"]}
         out["cleared"] = {k: sum(pyo.value(m.y[k, i]) for i in range(len(asin["demand"][k]))) for k in K}
-        if m._as["pfr"]:
-            out["pfr_short"] = pyo.value(m.pfr_short)  # MW short of the PFR floor
+        if m._as["pfr"]:  # MW short of the PFR floor (N - sum PFR), 0 if met
+            got = sum(out["awards"][u]["RRSPFR"] for u in out["awards"])
+            out["pfr_short"] = max(0.0, m._as["pfr"]["need"] - got)
     return out
 
 
@@ -299,14 +317,15 @@ def solve_with_fallback(units, load, penalty, network=(), asin=None, durations=N
 
 
 def solve_with_pricing(units, load, penalty, network=(), asin=None, durations=None):
-    """A dispatch run and, when the RRS-PFR rows are in, a separate pricing run without them.
+    """A dispatch run and, when the RRS-PFR rows are in, a separate floor-free price solve without them.
 
     ERCOT's awards obey the PFR floor exactly (total PFR = 1,377 MW in nearly every run, Sept 15-21), yet its
     RRS price matches a model run without the floor (Sept 15 and 18: median |error| $0.004, no run off by more
-    than $1), where the dispatch run's price can carry the floor's dual (down to -$10,000 when the floor and the
-    RRS curve's end tie). So: quantities (dispatch, awards) from the dispatch run with the PFR rows; prices from a
-    pricing run without them, returned as out["pricing"] = {"lambda", "mu", "mcpc", "solver"}. The dispatch
-    run's own prices stay in out. Both runs go through solve_with_fallback.
+    than $1), where the dispatch run's price can carry the PFR rows' dual. So: quantities (dispatch, awards) from
+    the dispatch run with the PFR rows; prices from a second solve without them, returned as
+    out["pricing"] = {"lambda", "mu", "mcpc", "solver"}. This is not ERCOT's own pricing run (Protocols 6.5.7.3.1,
+    reliability deployment price adders), which this model doesn't have. The dispatch run's own prices stay in
+    out. Both solves go through solve_with_fallback.
     """
     out = solve_with_fallback(units, load, penalty, network, asin=asin, durations=durations)
     if asin is not None and asin.get("pfr"):
