@@ -122,14 +122,28 @@ def test_highs_options_override():
 
 
 def test_sustained_limit_below_dispatch_floor():
-    # ERCOT data, TIMPP_AGR2 on 2026-09-16 08:55:18: LDL 6.0 > HSL 5.1 (derate), HDL 55.8. ERCOT held it at
-    # 6.0 MW with no AS. The capacity rows use max(HSL, LDL) = 6, so A is pinned at 6 MW and gets no RegUp;
-    # B ($20) serves the rest of the load and supplies RegUp ($2, inside its block): lambda 20, MCPC 2.
+    # ERCOT data, TIMPP_AGR2 on 2026-09-16 08:55:18: LDL 6.0 > HSL 5.1 (derate), HDL 55.8. The capacity rows
+    # use H = max(HSL, HDL) = 55.8 >= LDL, so the run stays feasible. A ($10) runs to HDL; RegUp from A would
+    # cost $10 of displaced energy + $1, more than B's $2, so B ($20, marginal) supplies it: lambda 20, MCPC 2.
     units = {"A": unit(10, 55.8, hsl=5.1, lsl=5.1, ldl=6.0), "B": unit(20, 200)}
     out = solve_interval(units, 100, 5000, asin=asin(
         [("A", 1, "REGUP", 10, 1), ("B", 1, "REGUP", 20, 2)], {"REGUP": [(100, 0, 10)]}))
-    assert out["dispatch"]["A"] == approx(6, abs=1e-4)
+    assert out["dispatch"]["A"] == approx(55.8, abs=1e-4)
+    assert out["dispatch"]["B"] == approx(44.2, abs=1e-4)
     assert out["awards"]["A"]["REGUP"] == approx(0, abs=1e-4)
     assert out["awards"]["B"]["REGUP"] == approx(10, abs=1e-4)
     assert out["lambda"] == approx(20, abs=1e-4)
     assert out["mcpc"]["REGUP"] == approx(2, abs=1e-4)
+
+
+def test_capacity_row_uses_hdl_above_hsl():
+    # ERCOT data, MDANP_CT1 on 2026-09-15 01:55:16: HSL 227.2, HDL 227.57 (HDL above HSL by 0.37 MW); ERCOT's
+    # base point plus NSpin award came to 227.57. With H = max(HSL, HDL) the cheap unit A ($10) runs to HDL,
+    # not HSL; B ($20) is marginal for energy and supplies the NSpin ($5 vs $10 + $1 from A): lambda 20, MCPC 5.
+    units = {"A": unit(10, 227.57, hsl=227.2, lsl=150, ldl=187.57), "B": unit(20, 500)}
+    out = solve_interval(units, 300, 5000, asin=asin(
+        [("A", 1, "NSPIN", 10, 1), ("B", 1, "NSPIN", 20, 5)], {"NSPIN": [(100, 0, 1)]}))
+    assert out["dispatch"]["A"] == approx(227.57, abs=1e-4)
+    assert out["awards"]["B"]["NSPIN"] == approx(1, abs=1e-4)
+    assert out["lambda"] == approx(20, abs=1e-4)
+    assert out["mcpc"]["NSPIN"] == approx(5, abs=1e-4)

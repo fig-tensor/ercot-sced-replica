@@ -70,11 +70,12 @@ def as_terms(units, asin):
     for u in as_units:
         if math.isnan(units[u]["hsl"]) or math.isnan(units[u]["lsl"]):
             raise ValueError(f"unit {u} offers AS but has no HSL/LSL")
-    # Limits for the capacity rows. ERCOT's data can have HSL below LDL (or LSL above HDL), e.g. a derate
-    # before the ramp-limited dispatch window catches up; ERCOT then holds the unit at its dispatch floor with
-    # no AS (TIMPP_AGR2, 2026-09-16 08:55:18: LDL 6.0, HSL 5.1, base point 6.0, awards 0). Using
-    # H = max(HSL, LDL) and L = min(LSL, HDL) reproduces that, and changes nothing for consistent units.
-    hsl = {u: max(units[u]["hsl"], units[u]["ldl"]) for u in as_units}
+    # Limits for the capacity rows: H = max(HSL, HDL), L = min(LSL, HDL).
+    # ERCOT dispatches up to HDL when HDL is above HSL (Sept 15-21: 4,165 unit-runs with HDL > HSL, median gap
+    # 0.3 MW; base point above max(HSL, LDL) in 3,972), and its own base points plus up-awards never exceed
+    # max(HSL, HDL), while they exceed max(HSL, LDL) 19 times (by 0.1-0.8 MW). H >= HDL > LDL for every
+    # dispatched unit, so the rows stay feasible when a derate puts HSL below LDL (TIMPP_AGR2, 2026-09-16).
+    hsl = {u: max(units[u]["hsl"], units[u]["hdl"]) for u in as_units}
     lsl = {u: min(units[u]["lsl"], units[u]["hdl"]) for u in as_units}
     seg = {(k, i): sw for k in K for i, sw in enumerate(demand[k])}
     return {"K": K, "price": price, "Q": Q, "by_award": by_award, "by_block": by_block,
