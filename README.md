@@ -2,13 +2,13 @@
 
 [![ci](https://github.com/fig-tensor/ercot-sced-replica/actions/workflows/ci.yml/badge.svg)](https://github.com/fig-tensor/ercot-sced-replica/actions/workflows/ci.yml) [![release](https://img.shields.io/github/v/release/fig-tensor/ercot-sced-replica)](https://github.com/fig-tensor/ercot-sced-replica/releases) [![license](https://img.shields.io/github/license/fig-tensor/ercot-sced-replica)](LICENSE)
 
-An open, validated nodal model of ERCOT's real-time market, built from public data. When no transmission constraint binds, the median error against ERCOT's published price is one cent (80% of runs within $0.85). With transmission constraints estimated from public prices, the congested-run median error drops from between -$2 and -$6 to within $0.50 on ordinary days. A day-ahead model built on ERCOT's public forecasts predicts which constraints will bind in each hour (AUC 0.88; 19% lower Brier score than the recent binding rate).
+An open, validated nodal model of ERCOT's real-time market, built from public data. When no transmission constraint binds, the median error against ERCOT's published price is one cent (80% of runs within $0.85). With transmission constraints estimated from public prices, the congested-run median error drops from between -$2 and -$6 to within $0.50 on ordinary days. With ancillary services co-optimized the way ERCOT's real-time market has cleared them since December 2025, the congested-run median absolute error falls further on every day tested (to $0.11-0.32 on five of seven days) and ancillary-service prices are reproduced to within 3 cents (median). A day-ahead model built on ERCOT's public forecasts predicts which constraints will bind in each hour (AUC 0.88; 19% lower Brier score than the recent binding rate).
 
 ![ERCOT system lambda vs replica with and without the network, 2026-09-15](docs/lambda_network_2026-09-15.png)
 
 ## Status
 
-Clearing of every SCED run in a day from real 60-day data, offer curves solved as a convex QP (HiGHS), with transmission constraints from estimated shift factors. Batteries (ESRs) clear as dispatchable resources, within state-of-charge limits. A scheduled daily run validates the newest disclosed day with and without the network; running record in `results/daily.csv`. A day-ahead forecasting layer predicts binding constraints from ERCOT's public forecasts. ERCOT's unplanned generation outage reports are collected daily for a future outage feature.
+Clearing of every SCED run in a day from real 60-day data, offer curves solved as a convex QP (PIQP, interior point, with a per-run fallback to other solvers), with transmission constraints from estimated shift factors. Batteries (ESRs) clear as dispatchable resources, within state-of-charge limits. Ancillary services (RegUp, RegDn, RRS, ECRS, Non-Spin) can be co-optimized with energy, as in ERCOT's market since RTC+B; this is validated on one week and not yet part of the daily run. A scheduled daily run validates the newest disclosed day with and without the network; running record in `results/daily.csv`. A day-ahead forecasting layer predicts binding constraints from ERCOT's public forecasts. ERCOT's unplanned generation outage reports are collected daily for a future outage feature.
 
 ## Run it
 
@@ -43,7 +43,8 @@ print(score(R))
 - Dispatchable set - online units only (status ON*) with HDL - LDL > 0.1 MW. Offline units (OFF, OUT, EMR) still carry live HDL/LDL in the data; leaving them in cost $13.90 on the first interval.
 - Load and fixed injections (fixed gens) - taken at SCED base points. Batteries are dispatched by the model (see Batteries).
 - Validation target - UncappedSystemLambda. Where ERCOT's uncapped value is missing (older days), CappedSystemLambda is used instead; if the live endpoint has no data, the archive's SystemLambda (no capped/uncapped split). The two matched on every 2026-09-08 run.
-- Numerical cleaning - segments under 0.1 MW dropped, slopes outside [0.001, 1000] flattened at average price. HiGHS tolerances: primal 1e-4 MW (scale-appropriate for a ~60 GW balance), dual 1e-6 $/MWh. 20 s time limit per SCED run.
+- Numerical cleaning - segments under 0.1 MW dropped, slopes outside [0.001, 1000] flattened at average price.
+- Solver - PIQP (interior point), with the model written as sparse matrices. If a run fails, it is retried with stricter PIQP settings, then with HiGHS (active set; tolerances primal 1e-4 MW, dual 1e-6 $/MWh, 20 s limit); each run records which solver produced it. See Solver.
 
 ## Results without the network
 
@@ -51,7 +52,7 @@ Error = model λ - ERCOT system lambda. 2026-08-10 to 2026-09-19 (40 days with p
 
 - Uncongested runs (3,350) - median error -$0.01/MWh; middle 80% of runs within -$0.83 to +$0.06. The replica reproduces SCED when no transmission constraint binds.
 - Congested runs (8,090, 71% of all runs) - median -$4.23; middle 80% within -$32.85 to -$0.06. Copper plate misses congestion; the model runs low (without network constraints; see Congestion).
-- Worst uncongested day - 2026-08-27, median -$26.90: a whole-day miss without congestion points at scarcity / ancillary-service pricing (next: compare against ancillary-service clearing prices, MCPC).
+- Worst uncongested day - 2026-08-27, median -$26.90: a whole-day miss without congestion points at scarcity / ancillary-service pricing (see Ancillary services).
 - 2026-09-08 by hour - essentially exact 0:00-8:00; -$6 to -$11 through the solar hours (9-17); -$30 to -$53 at the evening net peak (18-21), with ERCOT at $459 at 21:15.
 - Daily summaries in `results/daily.csv`; per-run detail in `results/runs/`.
 
@@ -80,7 +81,7 @@ What this does and doesn't show:
 - A constraint that didn't bind in the 14-day training window has no estimate. On an average day, about a quarter of the shadow price falls on such constraints.
 - The same line under a different contingency is a separate constraint with its own shift factors, so coverage grows slowly with more history.
 - Resources are matched to nodes using ERCOT's latest public mapping file (NP4-160), not the one in force on the day being modeled. 99.9% of resources match.
-- The QP uses every estimated shift factor. For the few runs where the solver stalls, it retries with shift factors below 0.01 set to zero. Cutting them everywhere roughly doubled the error: small shift factors carry real signal in aggregate.
+- The QP uses every estimated shift factor. Cutting shift factors below 0.01 everywhere roughly doubled the error: small shift factors carry real signal in aggregate. With HiGHS, runs that stalled were retried with that cut; with PIQP the stalls are gone (on 2026-09-15 to 09-21, the 53 runs where HiGHS needed the cut solved with every shift factor, and PIQP was closer to ERCOT on 41 of them). The retry remains as a last resort.
 
 ## Batteries
 
@@ -108,6 +109,46 @@ Median λ error on congested runs:
 A median near zero can hide errors that cancel: on 2026-09-15 and 2026-09-20, Network sits closer to zero than Both, but its median absolute error is higher (0.29 vs 0.20, 1.15 vs 0.37).
 
 The two fixes do different jobs. The network fixes congested prices; batteries fix the price level when nothing binds (median uncongested error on 2026-09-20: $6.29 without batteries, $0.40 with). They also interact: on 2026-09-17, the median evening error (hours 18-21) was -$146 with neither, -$12 with the network, -$119 with batteries, and -$2.21 with both. Batteries discharging behind a binding line only show up in λ when the model can see that line.
+
+## Ancillary services
+
+Since RTC+B (December 2025), ERCOT's real-time market clears energy and five ancillary services together: Regulation Up and Down, Responsive Reserve (RRS), Contingency Reserve (ECRS) and Non-Spinning Reserve. Each service has a price (MCPC) set by its own supply and demand, and holding capacity in reserve competes with producing energy, so reserve prices feed into λ. An energy-only model cannot produce that.
+
+The replica co-optimizes them from ERCOT's public data:
+- Offers - each resource offers up to six blocks; a block has one MW quantity shared by every service it prices (verified on 2026-09-21: ERCOT's awards fit this reading on every unit-run, using only blocks priced at or below the clearing price). ERCOT's proxy offers for resources that did not offer are already in the published data.
+- Demand - ERCOT's hourly demand curve for each service, linear between points. On 2026-09-21 ERCOT bought the full planned quantity of RegUp, RegDn, RRS and ECRS in every run, with the price set by supply; Non-Spin cleared on the sloped part of its curve, where ERCOT's price equalled the curve at the cleared quantity to the cent.
+- Limits - output plus up-reserves within the high sustained limit, a regulation ramp limit, and for batteries enough stored energy to sustain each award (ERCOT's qualification durations: 0.5 h for regulation and RRS, 1 h for ECRS, 4 h for Non-Spin). Without the duration limit, batteries take reserves ERCOT gave to other units and the reserve prices collapse.
+- Fixed - resources the replica does not dispatch (Load Resources, offline units) keep ERCOT's awards.
+
+Median absolute λ error on congested runs, energy only vs with ancillary services (network and batteries in both):
+
+| Date | Energy only | With AS |
+|---|---|---|
+| 2026-09-15 | $0.19 | $0.11 |
+| 2026-09-16 | $6.99 | $3.09 |
+| 2026-09-17 | $1.17 | $0.98 |
+| 2026-09-18 | $0.35 | $0.32 |
+| 2026-09-19 | $0.32 | $0.29 |
+| 2026-09-20 | $0.37 | $0.27 |
+| 2026-09-21 | $0.37 | $0.12 |
+
+The days where energy-only missed without congestion are the clearest: median uncongested error $0.77 -> $0.10 on 2026-09-16 and $0.40 -> $0.00 on 2026-09-20; evening (18-21) median error -$0.53 -> -$0.10 on 2026-09-15 and -$0.79 -> $0.00 on 2026-09-20. All 2,032 runs solved.
+
+Ancillary-service prices: median absolute error $0.00-0.03 per service over the week (90th percentile $0.08-0.61). The share of ERCOT's awards placed on a different unit is 8-13% for RegUp, RegDn and Non-Spin and 27-36% for ECRS and RRS, where many offers carry identical prices.
+
+Limits:
+- Load Resources and offline units are held at ERCOT's awards (about 27% of Non-Spin supply, 42% of RRS).
+- Battery durations are ERCOT's qualification values, not calibrated to its real-time rule.
+- Non-Spin is priced about $1-1.7 below ERCOT on some late evenings; the replica clears more Non-Spin than ERCOT did there, for a reason not yet identified.
+- The 2026-09-16 evening stays off by hundreds of dollars: the transmission coverage gap (see Congestion), not reserves.
+
+## Solver
+
+With ancillary services, a run has about 17,000 variables (thousands of 1-MW demand-curve segments). HiGHS's QP method (active set, which changes one constraint per iteration) slowed from 0.2 s at 200 segments to 8 s at 6,600 on a synthetic test, and on real runs stopped at its time limit or with a false "non-convex" status on problems that are convex and feasible. An interior-point method takes Newton steps on the whole system at once, so its iteration count barely depends on size. Of the open-source QP solvers tested (PIQP, Clarabel, OSQP, SCS, QPALM, ProxQP, HiGHS), PIQP and Clarabel matched HiGHS's answers exactly with default settings; PIQP was fastest and is the default.
+
+Regression, energy only, 2026-09-15 to 09-21: on the 2,019 runs both solvers solved, they never differed by more than $0.01 on the same model. PIQP solved 13 runs HiGHS could not (2,032 against 2,019), every validated median was equal or better, and runs took about 0.02 s instead of 1-2 s.
+
+Telemetry is not always consistent: a unit's sustained limit can sit below its dispatch floor (HSL < LDL, e.g. during a derate). ERCOT then holds the unit at its floor with no reserves, and the replica does the same; without that rule 7 runs of the week were infeasible.
 
 ## Day-ahead congestion forecast
 
@@ -149,25 +190,24 @@ Limits:
 
 ## Known gaps
 
-- Energy only. Post-RTC+B SCED co-optimizes AS; holding SCED's AS awards fixed moved λ by $0.01 on the first interval.
+- Ancillary services - Load Resources and offline units keep ERCOT's awards; battery durations are not calibrated; not yet in the daily run (see Ancillary services).
 - Transmission - covers only constraints that bound in the prior 14 days, and is given ERCOT's binding set and flows (see Congestion).
 - No unit commitment - offline and quick-start units are never started.
-- Runs that hit the 20 s limit are recorded as failed (ok = False), not solved.
+- A run is recorded as failed (ok = False) only if PIQP, PIQP with stricter settings and HiGHS all fail.
 - Batteries - charging efficiency is taken as 1. Where ERCOT charged past the state-of-charge limit, it did so by about 14% (median), consistent with efficiency near 0.88, but that sample only includes the overshoots, so it isn't a fitted value.
-- Batteries - on 2026-09-16, adding batteries leaves 6-10 more runs unsolved than without them; cause not yet checked.
 - Daylight-saving: the fall-back repeated hour is matched using ERCOT's RepeatedHourFlag; spring-forward unverified until the daily run reaches mid-March.
 
 ## Notes
 
-Degenerate λ at supply-curve steps - when load lands exactly on a step, any λ between the adjacent offers clears. The original LP returned the upper end (50 of [20, 50]); the segment QP returns the lower (20). Solver/formulation artifact, not a market rule.
+Degenerate λ at supply-curve steps - when load lands exactly on a step, any λ between the adjacent offers clears. Which one a solver returns depends on the algorithm: active-set and simplex methods stop at an end of the interval, interior-point methods near its middle (on a textbook case with valid λ in [20, 50], solvers returned 20, 30, 35, 43 and 50). It is not a market rule. On real runs it did not matter: in the solver regression, the same model never gave λ more than $0.01 apart.
 
 ## Daily run
 
-A scheduled GitHub workflow re-clears the newest disclosed day (about 61 days back), with and without the network, and appends a summary row to `results/daily.csv`. It also saves ERCOT's newest unplanned generation outage report (published that morning) to `results/outages/`.
+A scheduled GitHub workflow re-clears the newest disclosed day (about 61 days back), with and without the network, and appends a summary row to `results/daily.csv`. It also saves ERCOT's newest unplanned generation outage report (published that morning) to `results/outages/`. From 2026-11-24 the daily run uses PIQP; the network series changes only on runs where HiGHS used to need the reduced shift-factor retry.
 
 ## Teaching
 
-The repo is also intended as a worked example for teaching optimization and applied ML on real market data. Built so far - LP and QP, from a two-unit toy dispatch with hand-checkable duals, through offer-curve segments as a convex QP, to clearing real ERCOT intervals; then least-squares recovery of shift factors from public prices, with out-of-sample tests and a tuned rolling window; then a day-ahead classifier for binding constraints, with leakage-safe features, a walk-forward test against honest baselines, a regularization sweep, a lasso for interpretation and a paired bootstrap. The known-answer tests are the worked examples. Planned - supervised learning on the validation results (regressing λ error on congestion, load, renewables and hour, with a date-based train/test split).
+The repo is also intended as a worked example for teaching optimization and applied ML on real market data. Built so far - LP and QP, from a two-unit toy dispatch with hand-checkable duals, through offer-curve segments as a convex QP, to clearing real ERCOT intervals; then least-squares recovery of shift factors from public prices, with out-of-sample tests and a tuned rolling window; then co-optimized energy and reserves, with a comparison of active-set and interior-point QP methods on the same model; then a day-ahead classifier for binding constraints, with leakage-safe features, a walk-forward test against honest baselines, a regularization sweep, a lasso for interpretation and a paired bootstrap. The known-answer tests are the worked examples. Planned - supervised learning on the validation results (regressing λ error on congestion, load, renewables and hour, with a date-based train/test split).
 
 ## License
 
