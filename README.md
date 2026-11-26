@@ -154,8 +154,8 @@ Limits:
 - Battery durations are ERCOT's qualification values; ERCOT's own PFR awards occasionally exceed the 0.5 h RRS duration slightly.
 - The FFR maximum (450 MW) and the Load Resource share of RRS (60%) are not modeled: neither came close to binding in the week tested.
 - The PFR minimum is on file for 2026 only.
-- Scarcity evenings: on 2026-08-26, with reserve prices of $150-770, the replica's reserve prices ran 15-35% above ERCOT's (e.g. ECRS $396 against $321): it sees reserves as scarcer than ERCOT did. Not yet diagnosed.
-- In 13 of the 17,688 solved runs, PFR on offer could not fill the 1,377 MW minimum; the run then buys less RRS and reports the shortfall.
+- Scarcity evenings: on 2026-08-26 (about 21:00-22:50, reserve prices $150-770), the replica's reserve prices ran above ERCOT's (8-32% in the runs examined). The cause is on the energy side, not in the reserve rules. ERCOT's awards satisfy every rule the replica enforces, and with them held fixed the replica reproduces ERCOT's Non-Spin price within 0.5%. Left free, it holds 50-180 MW less Non-Spin, because carrying ERCOT's reserves would raise its λ $75-140 above ERCOT's. The same happens without the network, so the network is not the cause. Non-Spin clears on the sloped part of its curve, so that quantity gap sets the price gap. Why the replica's energy supply is steeper than ERCOT's at the margin is not established.
+- In 13 of the 17,688 solved runs, PFR on offer could not fill the 1,377 MW minimum; the run then buys less RRS and reports the shortfall. 12 of them are that same evening (21:55-22:50). ERCOT was short too (1,358 MW at 22:00), and, like the replica, it did not make up the difference with FFR.
 
 ## Solver
 
