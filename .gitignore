@@ -7,3 +7,4 @@ data/
 .env
 scratch/
 .vscode/
+.DS_Store

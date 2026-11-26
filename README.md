@@ -148,7 +148,7 @@ Median absolute λ error on congested runs and median evening (18-21) error, ene
 | August | 31 | $0.23 | $0.14 | -$0.42 | $0.00 |
 | Sep 1-25 | 25 | $0.24 | $0.15 | -$0.50 | -$0.02 |
 
-The congested error is lower on 60 of the 61 days (unchanged on the other). The clearest cases are days the energy-only model missed without congestion, where the missing piece was reserve scarcity: 2026-08-27, median uncongested error $13.08 -> $0.08; 2026-08-09, $0.84 -> $0.03. Evening misses close too: -$31.70 -> $0.08 on 2026-08-23, -$9.94 -> -$0.26 on 2026-09-02. Three evenings stay off by about the same with or without reserves (2026-08-17 -$15, 09-16 -$266, 09-22 -$53): energy-side errors (09-16 is the transmission coverage gap; see Congestion). 17,688 of 17,727 runs solved.
+The congested error is lower on 60 of the 61 days (unchanged on the other). The clearest cases are days the energy-only model missed without congestion, where the missing piece was reserve scarcity: 2026-08-27, median uncongested error $13.08 -> $0.08; 2026-08-09, $0.84 -> $0.03. Evening misses close too: -$31.70 -> $0.08 on 2026-08-23, -$9.94 -> -$0.26 on 2026-09-02. Three evenings stay off by about the same with or without reserves (2026-08-17 -$15, 09-16 -$266, 09-22 -$53): energy-side errors (09-16 is the transmission coverage gap; see Congestion). 17,684 of 17,727 runs solved.
 
 Ancillary-service prices, 61 days:
 
@@ -162,13 +162,15 @@ Ancillary-service prices, 61 days:
 
 ($/MW-h. Each month on its own gives the same picture. RRS and ECRS awards often land on other units at the right price: many offers carry identical prices.)
 
+Both tables are reproducible from the repo: the per-run results are in `results/runs_as/` and `results/runs_both/`, and `uv run python scripts/as_report.py 2026-07-27 2026-09-25` prints them.
+
 Limits:
 - Load Resources and offline units are held at ERCOT's awards (about 27% of Non-Spin supply, 42% of RRS).
 - Battery durations are ERCOT's qualification values; ERCOT's own PFR awards occasionally exceed the 0.5 h RRS duration slightly.
 - The FFR maximum (450 MW) and the Load Resource share of RRS (60%) are not modeled: neither came close to binding in the week tested.
 - The PFR minimum is on file for 2026 only.
 - Scarcity evenings: on 2026-08-26 (about 21:00-22:50, reserve prices $150-770), the replica's reserve prices ran above ERCOT's (8-32% in the runs examined). The cause is on the energy side, not in the reserve rules. ERCOT's awards satisfy every rule the replica enforces, and with them held fixed the replica reproduces ERCOT's Non-Spin price within 0.5%. Left free, it holds 50-180 MW less Non-Spin, because carrying ERCOT's reserves would raise its λ $75-140 above ERCOT's. The same happens without the network, so the network is not the cause. Non-Spin clears on the sloped part of its curve, so that quantity gap sets the price gap. Why the replica's energy supply is steeper than ERCOT's at the margin is not established.
-- In 13 of the 17,688 solved runs, PFR on offer could not fill the 1,377 MW minimum; the run then buys less RRS and reports the shortfall. 12 of them are that same evening (21:55-22:50). ERCOT was short too (1,358 MW at 22:00), and, like the replica, it did not make up the difference with FFR.
+- In 13 of the 17,684 solved runs, PFR on offer could not fill the 1,377 MW minimum; the run then buys less RRS and reports the shortfall. 12 of them are that same evening (21:55-22:50). ERCOT was short too (1,358 MW at 22:00), and, like the replica, it did not make up the difference with FFR.
 
 ## Solver
 
@@ -224,7 +226,7 @@ Limits:
 - Transmission - covers only constraints that bound in the prior 14 days, and is given ERCOT's binding set and flows (see Congestion).
 - No unit commitment - offline and quick-start units are never started.
 - A run is recorded as failed (ok = False) only if PIQP, PIQP with stricter settings and HiGHS all fail.
-- 39 of 17,727 runs (0.2%) in the ancillary-service validation do not solve (PIQP stalls; the HiGHS fallback times out).
+- 43 of 17,727 runs (0.2%) in the ancillary-service validation do not solve (PIQP stalls; the HiGHS fallback times out).
 - Batteries - charging efficiency is taken as 1. Where ERCOT charged past the state-of-charge limit, it did so by about 14% (median), consistent with efficiency near 0.88, but that sample only includes the overshoots, so it isn't a fitted value.
 - Daylight-saving: the fall-back repeated hour is matched using ERCOT's RepeatedHourFlag; spring-forward unverified until the daily run reaches mid-March.
 
