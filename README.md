@@ -25,7 +25,7 @@ Re-clear one day (needs ERCOT Public API credentials in `.env`: `ERCOT_API_USERN
 uv run --env-file .env scedrep YYYY-MM-DD
 ```
 
-Add `--as` to also clear it with ancillary services co-optimized (results in `results/runs_as/`), and give a second date to run a range (dates already done are skipped):
+Add `--as` to also clear it with ancillary services co-optimized (results in `results/runs_as/`), and give a second date to run a range. Only what is missing is solved: a model whose per-run file for that day exists is not run again (older days predate `runs_net/` and `runs_both/`, so a range fills those in):
 
 ```bash
 uv run --env-file .env scedrep YYYY-MM-DD --as

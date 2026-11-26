@@ -99,15 +99,34 @@ def _download(date):
     }
 
 
-def _solve_energy(date, d, node, SF):
-    """The three energy-only models (unchanged, so daily.csv history stays comparable):
-    cmp - no network, batteries fixed at base points; net - network, batteries fixed; both - network, batteries
-    dispatchable."""
+# Energy-only models and where their per-run files go:
+#   cmp  - no network, batteries fixed at base points
+#   net  - network, batteries fixed
+#   both - network, batteries dispatchable
+# Unchanged by the AS work, so daily.csv history stays comparable.
+ENERGY = {"cmp": "results/runs", "net": "results/runs_net", "both": "results/runs_both"}
+
+
+def _solve_energy(date, d, node, SF, models=tuple(ENERGY)):
+    """Solve the energy-only models named in models; returns {name: compare_day table}."""
     gen, esr, lam, sp = d["disc"]["sced_gen_resource"], d["disc"]["sced_esr"], d["lam"], d["sp"]
-    cmp = compare_day(run_day(gen), lam, sp)
-    net = compare_day(run_day(gen, net=(node, SF, sp)), lam, sp)
-    both = compare_day(run_day(gen, net=(node, SF, sp), esr=esr), lam, sp)
-    return cmp, net, both
+    kwargs = {"cmp": {}, "net": {"net": (node, SF, sp)}, "both": {"net": (node, SF, sp), "esr": esr}}
+    return {m: compare_day(run_day(gen, **kwargs[m]), lam, sp) for m in models}
+
+
+def energy_summary(name, t):
+    """daily.csv columns of one energy-only model, from its compare_day table."""
+    cong = t["congested"].astype(bool)
+    if name == "cmp":
+        return {"runs": len(t), "solved": int(t["ok"].sum()),
+                "med_err_uncongested": t.loc[~cong, "err"].median(),
+                "med_err_congested": t.loc[cong, "err"].median()}
+    if name == "net":
+        return {"solved_net": int(t["ok"].sum()), "med_err_congested_net": t.loc[cong, "err"].median()}
+    return {"solved_both": int(t["ok"].sum()),
+            "med_err_uncongested_both": t.loc[~cong, "err"].median(),
+            "med_err_congested_both": t.loc[cong, "err"].median(),
+            "med_err_evening_both": evening_median(t)}
 
 
 def _solve_as(date, d, node, SF):
@@ -126,37 +145,27 @@ def run_date(date, out="results/daily.csv", with_as=False):
     """Re-clear every SCED run of date and record how it compares with ERCOT.
 
     Energy-only models always (results/runs, runs_net, runs_both); with_as adds the AS model (results/runs_as).
-    One summary row per date in out. A date already in out is skipped, except that with_as fills in the AS
-    model for a date that has only the energy models.
+    One summary row per date in out. Only what's missing is solved: each energy model whose per-run file is missing
+    (a new date: all three; older days predate runs_net and runs_both) and, with with_as, the AS model if its file
+    is missing. Existing per-run files are never overwritten; a date with every file is skipped.
     """
     summary = pd.read_csv(out) if os.path.exists(out) else pd.DataFrame(columns=["date"])
-    have = date in summary["date"].astype(str).values
+    models = [m for m, folder in ENERGY.items() if not os.path.exists(f"{folder}/{date}.csv")]
     need_as = with_as and not os.path.exists(f"{AS_DIR}/{date}.csv")
-    if have and not need_as:
-        print(f"{date} already in {out}, skipping")
+    if not models and not need_as:
+        print(f"{date} already done, skipping")
         return None
 
     d = _download(date)
     disc = d["disc"]
-    node, SF = fit_network(d["api"], d["ercot"], date, pd.concat([disc["sced_gen_resource"], disc["sced_esr"]]))
+    node = SF = None
+    if need_as or set(models) & {"net", "both"}:  # only the copper-plate model runs without the network
+        node, SF = fit_network(d["api"], d["ercot"], date, pd.concat([disc["sced_gen_resource"], disc["sced_esr"]]))
     row = {}
-    if not have:
-        cmp, net, both = _solve_energy(date, d, node, SF)
-        row = {
-            "runs": len(cmp),
-            "solved": int(cmp["ok"].sum()),
-            "med_err_uncongested": cmp.loc[~cmp["congested"], "err"].median(),
-            "med_err_congested": cmp.loc[cmp["congested"], "err"].median(),
-            "solved_net": int(net["ok"].sum()),
-            "med_err_congested_net": net.loc[net["congested"], "err"].median(),
-            "solved_both": int(both["ok"].sum()),
-            "med_err_uncongested_both": both.loc[~both["congested"], "err"].median(),
-            "med_err_congested_both": both.loc[both["congested"], "err"].median(),
-            "med_err_evening_both": evening_median(both),
-        }
-        for folder, df in [("results/runs", cmp), ("results/runs_net", net), ("results/runs_both", both)]:
-            os.makedirs(folder, exist_ok=True)
-            df.to_csv(f"{folder}/{date}.csv", index=False)
+    for m, t in _solve_energy(date, d, node, SF, models).items():
+        row.update(energy_summary(m, t))
+        os.makedirs(ENERGY[m], exist_ok=True)
+        t.to_csv(f"{ENERGY[m]}/{date}.csv", index=False)
     if need_as:
         t = _solve_as(date, d, node, SF)
         row.update(as_summary(t))
