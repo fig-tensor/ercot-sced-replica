@@ -76,3 +76,38 @@ def test_get_as_demand_curves_keeps_latest_posting(tmp_path):
     assert len(curves) == 2                                     # one curve per (hour, product), Sept 21 only
     assert curves.loc["RRS", "curve"] == [(0.0, 200.0), (500.0, 200.0)]   # latest posting kept
     assert curves.loc["ECRS", "curve"] == [(0.0, 50.0), (345.0, 50.0)]    # points sorted by MW
+
+def test_get_as_prices_drops_duplicate_runs(tmp_path):
+    # 2026-08-27 lists some runs twice, both copies without a price: one row per run and product must remain.
+    # Also: a priced copy beside an unpriced one keeps the price.
+    raw = pd.DataFrame({
+        "SCEDTimestamp": ["08/27/2026 10:35:17"] * 2 + ["08/27/2026 10:40:18"] * 2 + ["08/27/2026 10:45:18"],
+        "RepeatedHourFlag": ["N"] * 5,
+        "ASType": ["ECRS"] * 5,
+        "CappedMCPC": [None, None, None, 3.5, 2.0],
+        "UncappedMCPC": [None, None, None, 3.5, 2.0],
+    })
+    out = get_as_prices(FakeArchive(raw), "2026-08-27", cache=tmp_path)
+    assert len(out) == 3
+    assert not out.duplicated(["SCED Timestamp", "ASType"]).any()
+    p = out.set_index("SCED Timestamp")["mcpc"]
+    assert pd.isna(p.iloc[0]) and p.iloc[1] == 3.5 and p.iloc[2] == 2.0
+
+
+def test_get_as_prices_cleans_an_old_cache(tmp_path):
+    # A cache written before the fix still has the duplicates: reading it returns one row per run and product
+    ts = pd.Timestamp("2026-08-27 10:35:17", tz="US/Central")
+    pd.DataFrame({"SCED Timestamp": [ts, ts], "ASType": ["RRS", "RRS"], "mcpc": [float("nan")] * 2,
+                  "mcpc_uncapped": [float("nan")] * 2}).to_pickle(tmp_path / "mcpc_2026-08-27.pkl")
+    assert len(get_as_prices(FakeArchive(None), "2026-08-27", cache=tmp_path)) == 1
+
+
+def test_get_as_prices_conflicting_duplicates_raise(tmp_path):
+    raw = pd.DataFrame({"SCEDTimestamp": ["08/27/2026 10:35:17"] * 2, "RepeatedHourFlag": ["N"] * 2,
+                        "ASType": ["NSPIN"] * 2, "CappedMCPC": [1.0, 2.0], "UncappedMCPC": [1.0, 2.0]})
+    try:
+        get_as_prices(FakeArchive(raw), "2026-08-27", cache=tmp_path)
+    except ValueError as e:
+        assert "different MCPCs" in str(e)
+    else:
+        raise AssertionError("expected ValueError")

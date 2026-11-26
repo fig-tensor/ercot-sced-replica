@@ -115,7 +115,7 @@ def get_as_prices(api, date, cache="data"):
     """
     path = os.path.join(cache, f"mcpc_{date}.pkl")
     if os.path.exists(path):
-        return pd.read_pickle(path)
+        return one_price_per_run(pd.read_pickle(path))  # caches written before the duplicate fix may hold them
 
     # Each run's prices are posted seconds after the run, so postings from midnight to the next
     # midnight cover the day (calendar dates, so a 23- or 25-hour DST day is handled)
@@ -140,10 +140,30 @@ def get_as_prices(api, date, cache="data"):
         mcpc=pd.to_numeric(capped, errors="coerce"),
         mcpc_uncapped=pd.to_numeric(uncapped, errors="coerce"),
     ).reset_index(drop=True)
+    out = one_price_per_run(out)
 
     os.makedirs(cache, exist_ok=True)
     out.to_pickle(path)
     return out
+
+
+def one_price_per_run(mcpc):
+    """At most one row per (SCED run, product).
+
+    The archive can list a run twice: 2026-08-27 has five runs (10:35-11:00) posted twice, every copy without a
+    price. Identical copies collapse to one; where one copy has a price and the other doesn't, the priced one is
+    kept. Two different prices for one run and product would mean a correction whose order the archive doesn't
+    give, so that raises instead of guessing.
+    """
+    key = ["SCED Timestamp", "ASType"]
+    out = mcpc.drop_duplicates()                                   # identical copies (NaN counts as equal)
+    out = out.sort_values("mcpc", na_position="last", kind="stable")
+    out = out[~(out.duplicated(key, keep=False) & out["mcpc"].isna())]  # a copy without a price, beside a priced one
+    clash = out[out.duplicated(key, keep=False)]
+    if not clash.empty:
+        runs = sorted(clash["SCED Timestamp"].astype(str).unique())
+        raise ValueError(f"different MCPCs posted for the same run and product: {runs[:5]}")
+    return out.sort_values(key, kind="stable").reset_index(drop=True)
 
 
 def get_as_demand_curves(api, date, cache="data"):
