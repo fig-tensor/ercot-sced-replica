@@ -8,7 +8,7 @@ permissions:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 240  # the AS model roughly doubles a day's solve time
     steps:
       - uses: actions/checkout@v4
       - uses: actions/cache@v4
@@ -23,7 +23,7 @@ jobs:
           ERCOT_API_USERNAME: ${{ secrets.ERCOT_API_USERNAME }}
           ERCOT_API_PASSWORD: ${{ secrets.ERCOT_API_PASSWORD }}
           ERCOT_PUBLIC_API_SUBSCRIPTION_KEY: ${{ secrets.ERCOT_PUBLIC_API_SUBSCRIPTION_KEY }}
-        run: uv run scedrep "$(date -u -d '61 days ago' +%Y-%m-%d)"
+        run: uv run scedrep "$(date -u -d '61 days ago' +%Y-%m-%d)" --as
       - name: Save today's unplanned outage report
         continue-on-error: true
         run: uv run python -c "from scedrep.fetch import save_unplanned_outages; save_unplanned_outages('$(TZ=America/Chicago date +%Y-%m-%d)')"

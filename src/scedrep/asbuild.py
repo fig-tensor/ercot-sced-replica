@@ -20,6 +20,10 @@ TZ = "US/Central"
 PFR_MIN = {2026: 1377.0}
 PFR_UNIT_MAX = 157.0
 
+# Battery duration per product (hours): stored energy must sustain each award this long. ERCOT's qualification
+# values for Energy Storage Resources (NPRR1282). Passed as `durations` to the clearing.
+QUALIFICATION = {"REGUP": 0.5, "REGDN": 0.5, "RRS": 0.5, "ECRS": 1.0, "NSPIN": 4.0}
+
 # ERCOT renamed the price-column suffixes in late March 2026; map old names to new ones.
 OLD_TO_NEW = {"_URS": "_REGUP", "_DRS": "_REGDN", "_NS": "_NSPIN",
               "_RRSPF": "_RRSPFR", "_RRSUF": "_RRSUFR", "_RRSFF": "_RRSFFR"}

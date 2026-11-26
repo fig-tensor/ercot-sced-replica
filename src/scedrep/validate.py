@@ -106,3 +106,36 @@ def compare_as(res, mcpc, prefix="mcpc_"):
     out = long.merge(m.rename(columns={"mcpc": "ercot"}), on=["t", "ASType"], how="left").drop(columns="t")
     out["err"] = out["model"] - out["ercot"]
     return out
+
+def as_price_report(t):
+    """Per product, over the runs in t (as_table rows, any number of days): median and 90th percentile of
+    |MCPC error| ($/MW-h), and the share of ERCOT's award MW the model put on a different unit."""
+    ok = t[t["ok"].astype(bool)]
+    rows = []
+    for k in PRODUCTS:
+        e = ok[f"err_mcpc_{k}"].abs()
+        tot = ok[f"award_tot_{k}"].sum() if f"award_tot_{k}" in ok else 0.0
+        rows.append({"product": k, "median |err|": e.median(), "p90 |err|": e.quantile(0.9),
+                     "awards misplaced": ok[f"award_err_{k}"].sum() / tot if tot > 0 else float("nan")})
+    return pd.DataFrame(rows).set_index("product")
+
+
+def lambda_report(as_t, both_t, tz="US/Central"):
+    """Per month, on runs both models solved: median |lambda error| on congested runs and median evening (18-21)
+    error, energy only (both_t: runs_both rows) against the AS model (as_t: as_table rows)."""
+    key = "SCED Timestamp"
+    a = as_t[as_t["ok"].astype(bool)].assign(t=pd.to_datetime(as_t[key], utc=True))
+    b = both_t[both_t["ok"].astype(bool)].assign(t=pd.to_datetime(both_t[key], utc=True))
+    j = b[["t", "err", "congested"]].merge(a[["t", "err"]], on="t", suffixes=("_energy", "_as"))
+    local = j["t"].dt.tz_convert(tz)
+    j["month"], j["evening"] = local.dt.strftime("%Y-%m"), local.dt.hour.between(18, 21)
+    cong = j["congested"].astype(bool)
+    rows = []
+    for m, g in j.groupby("month"):
+        c, ev = cong[g.index], g["evening"]
+        rows.append({"month": m, "days": local[g.index].dt.date.nunique(), "runs": len(g),
+                     "congested |err| energy": g.loc[c, "err_energy"].abs().median(),
+                     "congested |err| AS": g.loc[c, "err_as"].abs().median(),
+                     "evening err energy": g.loc[ev, "err_energy"].median(),
+                     "evening err AS": g.loc[ev, "err_as"].median()})
+    return pd.DataFrame(rows).set_index("month")

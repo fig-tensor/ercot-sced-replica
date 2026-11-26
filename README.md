@@ -8,7 +8,7 @@ An open, validated nodal model of ERCOT's real-time market, built from public da
 
 ## Status
 
-Clearing of every SCED run in a day from real 60-day data, offer curves solved as a convex QP (PIQP, interior point, with a per-run fallback to other solvers), with transmission constraints from estimated shift factors. Batteries (ESRs) clear as dispatchable resources, within state-of-charge limits. Ancillary services (RegUp, RegDn, RRS, ECRS, Non-Spin) can be co-optimized with energy, as in ERCOT's market since RTC+B; this is validated on 61 days (2026-07-27 to 09-25, 17,727 SCED runs) and not yet part of the daily run. A scheduled daily run validates the newest disclosed day with and without the network; running record in `results/daily.csv`. A day-ahead forecasting layer predicts binding constraints from ERCOT's public forecasts. ERCOT's unplanned generation outage reports are collected daily for a future outage feature.
+Clearing of every SCED run in a day from real 60-day data, offer curves solved as a convex QP (PIQP, interior point, with a per-run fallback to other solvers), with transmission constraints from estimated shift factors. Batteries (ESRs) clear as dispatchable resources, within state-of-charge limits. Ancillary services (RegUp, RegDn, RRS, ECRS, Non-Spin) can be co-optimized with energy, as in ERCOT's market since RTC+B; this is validated on 61 days (2026-07-27 to 09-25, 17,727 SCED runs). A scheduled daily run validates the newest disclosed day with and without the network, and with ancillary services; running record in `results/daily.csv`. A day-ahead forecasting layer predicts binding constraints from ERCOT's public forecasts. ERCOT's unplanned generation outage reports are collected daily for a future outage feature.
 
 ## Run it
 
@@ -23,6 +23,19 @@ Re-clear one day (needs ERCOT Public API credentials in `.env`: `ERCOT_API_USERN
 
 ```bash
 uv run --env-file .env scedrep YYYY-MM-DD
+```
+
+Add `--as` to also clear it with ancillary services co-optimized (results in `results/runs_as/`), and give a second date to run a range (dates already done are skipped):
+
+```bash
+uv run --env-file .env scedrep YYYY-MM-DD --as
+uv run --env-file .env scedrep 2026-07-27 2026-09-25 --as
+```
+
+Summarise the ancillary-service results already saved in `results/` (no downloads): reserve-price errors by service, and λ errors by month against the energy-only model:
+
+```bash
+uv run python scripts/as_report.py 2026-07-27 2026-09-25
 ```
 
 Build the forecasting dataset and run the walk-forward test (save as a script and run it with `uv run --env-file .env python <script>`; downloads are cached in `data/`):
@@ -207,7 +220,7 @@ Limits:
 
 ## Known gaps
 
-- Ancillary services - Load Resources and offline units keep ERCOT's awards; battery durations are not calibrated; ERCOT's own pricing run (reliability deployment price adders) is not modeled; not yet in the daily run (see Ancillary services).
+- Ancillary services - Load Resources and offline units keep ERCOT's awards; battery durations are not calibrated; ERCOT's own pricing run (reliability deployment price adders) is not modeled (see Ancillary services).
 - Transmission - covers only constraints that bound in the prior 14 days, and is given ERCOT's binding set and flows (see Congestion).
 - No unit commitment - offline and quick-start units are never started.
 - A run is recorded as failed (ok = False) only if PIQP, PIQP with stricter settings and HiGHS all fail.
@@ -221,7 +234,7 @@ Degenerate λ at supply-curve steps - when load lands exactly on a step, any λ 
 
 ## Daily run
 
-A scheduled GitHub workflow re-clears the newest disclosed day (about 61 days back), with and without the network, and appends a summary row to `results/daily.csv`. It also saves ERCOT's newest unplanned generation outage report (published that morning) to `results/outages/`. From 2026-11-24 the daily run uses PIQP; the network series changes only on runs where HiGHS used to need the reduced shift-factor retry.
+A scheduled GitHub workflow re-clears the newest disclosed day (about 61 days back), with and without the network, and with ancillary services co-optimized (`scedrep DATE --as`), and writes one summary row per day to `results/daily.csv`, kept in date order. The AS columns (`*_as`, `med_abs_err_mcpc_*`) compare λ from the floor-free solve and each service's price with ERCOT's; per-run detail is in `results/runs_as/`. It also saves ERCOT's newest unplanned generation outage report (published that morning) to `results/outages/`. From 2026-11-24 the daily run uses PIQP; the network series changes only on runs where HiGHS used to need the reduced shift-factor retry.
 
 ## Teaching
 
