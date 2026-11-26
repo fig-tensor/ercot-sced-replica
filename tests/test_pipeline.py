@@ -89,10 +89,14 @@ def fake_pipeline(monkeypatch, calls):
     monkeypatch.setattr(P, "_download", lambda d: {"api": None, "ercot": None,
                                                    "disc": {"sced_gen_resource": pd.DataFrame({"Resource Name": []}),
                                                             "sced_esr": pd.DataFrame({"Resource Name": []})}})
-    monkeypatch.setattr(P, "fit_network", lambda *a: (None, None))
-    monkeypatch.setattr(P, "_solve_energy", lambda *a: calls.append("energy") or (one, one, one))
+    monkeypatch.setattr(P, "fit_network", lambda *a: calls.append("network") or (None, None))
+    monkeypatch.setattr(P, "_solve_energy",
+                        lambda date, d, node, SF, models: calls.append(tuple(models)) or {m: one for m in models})
     monkeypatch.setattr(P, "as_summary", lambda t: {"solved_as": 1})
     monkeypatch.setattr(P, "_solve_as", lambda *a: calls.append("as") or one)
+
+
+ALL = ("cmp", "net", "both")
 
 
 def test_run_date_skip_and_fill(monkeypatch, tmp_path):
@@ -101,18 +105,59 @@ def test_run_date_skip_and_fill(monkeypatch, tmp_path):
     fake_pipeline(monkeypatch, calls)
     out = "results/daily.csv"
     P.run_date("2026-09-01", out)                    # new date, energy only
-    assert calls == ["energy"]
+    assert calls == ["network", ALL]
+    calls.clear()
     P.run_date("2026-09-01", out)                    # already there: skipped
-    assert calls == ["energy"]
+    assert calls == []
     P.run_date("2026-09-01", out, with_as=True)      # AS filled in, energy not re-run
-    assert calls == ["energy", "as"]
+    assert calls == ["network", (), "as"]
     assert os.path.exists(f"{P.AS_DIR}/2026-09-01.csv")
-    P.run_date("2026-09-01", out, with_as=True)      # both there: skipped
-    assert calls == ["energy", "as"]
-    P.run_date("2026-09-02", out, with_as=True)      # new date with AS: both
-    assert calls == ["energy", "as", "energy", "as"]
+    calls.clear()
+    P.run_date("2026-09-01", out, with_as=True)      # everything there: skipped
+    assert calls == []
+    P.run_date("2026-09-02", out, with_as=True)      # new date with AS: everything
+    assert calls == ["network", ALL, "as"]
     s = pd.read_csv(out)
     assert list(s["date"]) == ["2026-09-01", "2026-09-02"] and list(s["solved_as"]) == [1, 1]
+
+
+def test_run_date_fills_missing_energy_files(monkeypatch, tmp_path):
+    # A day in daily.csv from before runs_net and runs_both were saved: only those two are solved, the existing
+    # copper-plate file and its summary values are left alone
+    monkeypatch.chdir(tmp_path)
+    calls = []
+    fake_pipeline(monkeypatch, calls)
+    out = "results/daily.csv"
+    os.makedirs("results/runs")
+    pd.DataFrame({"x": [1]}).to_csv("results/runs/2026-08-10.csv", index=False)
+    pd.DataFrame({"date": ["2026-08-10"], "runs": [288], "solved": [287]}).to_csv(out, index=False)
+    P.run_date("2026-08-10", out)
+    assert calls == ["network", ("net", "both")]
+    assert pd.read_csv("results/runs/2026-08-10.csv").columns.tolist() == ["x"]   # not overwritten
+    s = pd.read_csv(out).iloc[0]
+    assert s["solved"] == 287 and s["solved_net"] == 1 and s["solved_both"] == 1
+
+
+def test_run_date_copper_plate_only_skips_network(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    calls = []
+    fake_pipeline(monkeypatch, calls)
+    out = "results/daily.csv"
+    for f in ("runs_net", "runs_both"):
+        os.makedirs(f"results/{f}")
+        pd.DataFrame({"x": [1]}).to_csv(f"results/{f}/2026-08-11.csv", index=False)
+    P.run_date("2026-08-11", out)                    # not in daily.csv either: still only the missing model
+    assert calls == [("cmp",)]                        # no shift-factor fit for the copper plate
+
+
+def test_energy_summary_columns():
+    t = pd.DataFrame({"SCED Timestamp": [T0, T1], "ok": [True, False], "congested": [False, True],
+                      "err": [1.0, 3.0]})
+    assert P.energy_summary("cmp", t) == {"runs": 2, "solved": 1, "med_err_uncongested": 1.0,
+                                          "med_err_congested": 3.0}
+    assert P.energy_summary("net", t) == {"solved_net": 1, "med_err_congested_net": 3.0}
+    assert set(P.energy_summary("both", t)) == {"solved_both", "med_err_uncongested_both",
+                                                "med_err_congested_both", "med_err_evening_both"}
 
 
 def test_parse_args():
