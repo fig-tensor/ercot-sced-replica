@@ -54,3 +54,24 @@ def test_compare_as():
     pr = compare_as(res.rename(columns={"mcpc_REGUP": "mcpcpr_REGUP", "mcpc_RRS": "mcpcpr_RRS"}), mcpc,
                     prefix="mcpcpr_").set_index("ASType")
     assert pr.loc["REGUP", "err"] == approx(0.5)
+
+def test_as_price_report_and_lambda_report():
+    from scedrep.validate import as_price_report, lambda_report
+    t0 = pd.Timestamp("2026-08-31 19:00:20", tz="US/Central")
+    t1 = pd.Timestamp("2026-09-01 10:00:20", tz="US/Central")
+    a = pd.DataFrame({"SCED Timestamp": [t0, t1], "ok": [True, True], "err": [0.5, -2.0],
+                      **{f"err_mcpc_{k}": [0.1, -0.3] for k in PRODUCTS},
+                      **{f"award_tot_{k}": [10.0, 10.0] for k in PRODUCTS},
+                      **{f"award_err_{k}": [1.0, 3.0] for k in PRODUCTS}})
+    r = as_price_report(a)
+    assert r.loc["RRS", "median |err|"] == approx(0.2)
+    assert r.loc["RRS", "awards misplaced"] == approx(0.2)
+    # energy only: same runs, both congested; read back from CSV, timestamps are strings
+    b = pd.DataFrame({"SCED Timestamp": [str(t0), str(t1)], "ok": [True, True], "err": [3.0, -4.0],
+                      "congested": [True, True]})
+    lr = lambda_report(a, b)
+    assert list(lr.index) == ["2026-08", "2026-09"]
+    assert lr.loc["2026-08", "congested |err| energy"] == approx(3.0)
+    assert lr.loc["2026-09", "congested |err| AS"] == approx(2.0)
+    assert lr.loc["2026-08", "evening err AS"] == approx(0.5)
+    assert pd.isna(lr.loc["2026-09", "evening err AS"])   # 10:00 is not evening
