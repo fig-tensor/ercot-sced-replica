@@ -2,13 +2,13 @@
 
 [![ci](https://github.com/fig-tensor/ercot-sced-replica/actions/workflows/ci.yml/badge.svg)](https://github.com/fig-tensor/ercot-sced-replica/actions/workflows/ci.yml) [![release](https://img.shields.io/github/v/release/fig-tensor/ercot-sced-replica)](https://github.com/fig-tensor/ercot-sced-replica/releases) [![license](https://img.shields.io/github/license/fig-tensor/ercot-sced-replica)](LICENSE)
 
-An open, validated nodal model of ERCOT's real-time market, built from public data. When no transmission constraint binds, the median error against ERCOT's published price is one cent (80% of runs within $0.85). With transmission constraints estimated from public prices, the congested-run median error drops from between -$2 and -$6 to within $0.50 on ordinary days. With ancillary services co-optimized the way ERCOT's real-time market has cleared them since December 2025, the congested-run median absolute error falls further on every day tested (to $0.11-0.32 on five of seven days) and ancillary-service prices are reproduced to within half a cent (median; 1-8 cents at the 90th percentile). A day-ahead model built on ERCOT's public forecasts predicts which constraints will bind in each hour (AUC 0.88; 19% lower Brier score than the recent binding rate).
+An open, validated nodal model of ERCOT's real-time market, built from public data. When no transmission constraint binds, the median error against ERCOT's published price is one cent (80% of runs within $0.85). With transmission constraints estimated from public prices, the congested-run median error drops from between -$2 and -$6 to within $0.50 on ordinary days. With ancillary services co-optimized the way ERCOT's real-time market has cleared them since December 2025, the congested-run median absolute error falls further on 60 of 61 days tested (July 27 to September 25, 2026; monthly medians $0.23-0.32 down to $0.14-0.18), and ancillary-service prices are reproduced to within half a cent (median; 1-4 cents at the 90th percentile, 12 cents for Regulation Down). A day-ahead model built on ERCOT's public forecasts predicts which constraints will bind in each hour (AUC 0.88; 19% lower Brier score than the recent binding rate).
 
 ![ERCOT system lambda vs replica with and without the network, 2026-09-15](docs/lambda_network_2026-09-15.png)
 
 ## Status
 
-Clearing of every SCED run in a day from real 60-day data, offer curves solved as a convex QP (PIQP, interior point, with a per-run fallback to other solvers), with transmission constraints from estimated shift factors. Batteries (ESRs) clear as dispatchable resources, within state-of-charge limits. Ancillary services (RegUp, RegDn, RRS, ECRS, Non-Spin) can be co-optimized with energy, as in ERCOT's market since RTC+B; this is validated on one week and not yet part of the daily run. A scheduled daily run validates the newest disclosed day with and without the network; running record in `results/daily.csv`. A day-ahead forecasting layer predicts binding constraints from ERCOT's public forecasts. ERCOT's unplanned generation outage reports are collected daily for a future outage feature.
+Clearing of every SCED run in a day from real 60-day data, offer curves solved as a convex QP (PIQP, interior point, with a per-run fallback to other solvers), with transmission constraints from estimated shift factors. Batteries (ESRs) clear as dispatchable resources, within state-of-charge limits. Ancillary services (RegUp, RegDn, RRS, ECRS, Non-Spin) can be co-optimized with energy, as in ERCOT's market since RTC+B; this is validated on 61 days (2026-07-27 to 09-25, 17,727 SCED runs) and not yet part of the daily run. A scheduled daily run validates the newest disclosed day with and without the network; running record in `results/daily.csv`. A day-ahead forecasting layer predicts binding constraints from ERCOT's public forecasts. ERCOT's unplanned generation outage reports are collected daily for a future outage feature.
 
 ## Run it
 
@@ -52,7 +52,7 @@ Error = model λ - ERCOT system lambda. 2026-08-10 to 2026-09-19 (40 days with p
 
 - Uncongested runs (3,350) - median error -$0.01/MWh; middle 80% of runs within -$0.83 to +$0.06. The replica reproduces SCED when no transmission constraint binds.
 - Congested runs (8,090, 71% of all runs) - median -$4.23; middle 80% within -$32.85 to -$0.06. Copper plate misses congestion; the model runs low (without network constraints; see Congestion).
-- Worst uncongested day - 2026-08-27, median -$26.90: a whole-day miss without congestion points at scarcity / ancillary-service pricing (see Ancillary services).
+- Worst uncongested day - 2026-08-27, median -$26.90: a whole-day miss without congestion was reserve scarcity: with ancillary services co-optimized, that day's median uncongested error is $0.08 (see Ancillary services).
 - 2026-09-08 by hour - essentially exact 0:00-8:00; -$6 to -$11 through the solar hours (9-17); -$30 to -$53 at the evening net peak (18-21), with ERCOT at $459 at 21:15.
 - Daily summaries in `results/daily.csv`; per-run detail in `results/runs/`.
 
@@ -127,38 +127,35 @@ The replica co-optimizes them from ERCOT's public data:
 
 **Prices.** ERCOT's awards obey the PFR minimum, but its RRS price does not reflect it: on 2026-09-15 and 09-18, RRS prices from a solve without the PFR rows matched ERCOT's (median error $0.004, no run off by more than $1), while the same solve with them was off by more than $1 in over 200 runs. So quantities come from the full model and prices from a second solve without the PFR rows. Why ERCOT's price behaves this way is not established.
 
-Median absolute λ error on congested runs, energy only vs with ancillary services (network and batteries in both):
+Median absolute λ error on congested runs and median evening (18-21) error, energy only vs with ancillary services (network and batteries in both), 2026-07-27 to 09-25:
 
-| Date | Energy only | With AS |
-|---|---|---|
-| 2026-09-15 | $0.19 | $0.11 |
-| 2026-09-16 | $6.99 | $3.13 |
-| 2026-09-17 | $1.17 | $0.68 |
-| 2026-09-18 | $0.35 | $0.32 |
-| 2026-09-19 | $0.32 | $0.28 |
-| 2026-09-20 | $0.37 | $0.27 |
-| 2026-09-21 | $0.37 | $0.11 |
+| Period | Days | Congested: energy only | With AS | Evening: energy only | With AS |
+|---|---|---|---|---|---|
+| Jul 27-31 | 5 | $0.32 | $0.18 | -$0.50 | $0.00 |
+| August | 31 | $0.23 | $0.14 | -$0.42 | $0.00 |
+| Sep 1-25 | 25 | $0.24 | $0.15 | -$0.50 | -$0.02 |
 
-The days where energy-only missed without congestion are the clearest: median uncongested error $0.58 -> $0.07 on 2026-09-16 and $0.40 -> $0.00 on 2026-09-20; evening (18-21) median error -$0.53 -> -$0.08 on 2026-09-15 and -$0.79 -> $0.01 on 2026-09-20. 2,029 of 2,032 runs solved.
+The congested error is lower on 60 of the 61 days (unchanged on the other). The clearest cases are days the energy-only model missed without congestion, where the missing piece was reserve scarcity: 2026-08-27, median uncongested error $13.08 -> $0.08; 2026-08-09, $0.84 -> $0.03. Evening misses close too: -$31.70 -> $0.08 on 2026-08-23, -$9.94 -> -$0.26 on 2026-09-02. Three evenings stay off by about the same with or without reserves (2026-08-17 -$15, 09-16 -$266, 09-22 -$53): energy-side errors (09-16 is the transmission coverage gap; see Congestion). 17,688 of 17,727 runs solved.
 
-Ancillary-service prices over the week:
+Ancillary-service prices, 61 days:
 
 | Service | Median abs. error | 90th percentile | Awards on a different unit than ERCOT's |
 |---|---|---|---|
-| RegUp | $0.002 | $0.05 | 4% |
-| RegDn | $0.000 | $0.07 | 8% |
-| RRS | $0.004 | $0.01 | 27% |
-| ECRS | $0.003 | $0.02 | 14% |
-| Non-Spin | $0.000 | $0.08 | 4% |
+| RegUp | $0.001 | $0.04 | 4% |
+| RegDn | $0.000 | $0.12 | 8% |
+| RRS | $0.004 | $0.01 | 26% |
+| ECRS | $0.003 | $0.01 | 14% |
+| Non-Spin | $0.000 | $0.04 | 4% |
 
-($/MW-h. RRS and ECRS awards often land on other units at the right price: many offers carry identical prices.)
+($/MW-h. Each month on its own gives the same picture. RRS and ECRS awards often land on other units at the right price: many offers carry identical prices.)
 
 Limits:
 - Load Resources and offline units are held at ERCOT's awards (about 27% of Non-Spin supply, 42% of RRS).
 - Battery durations are ERCOT's qualification values; ERCOT's own PFR awards occasionally exceed the 0.5 h RRS duration slightly.
 - The FFR maximum (450 MW) and the Load Resource share of RRS (60%) are not modeled: neither came close to binding in the week tested.
 - The PFR minimum is on file for 2026 only.
-- The 2026-09-16 evening stays off by hundreds of dollars, with Non-Spin $11-26 high: the transmission coverage gap (see Congestion), not reserves.
+- Scarcity evenings: on 2026-08-26, with reserve prices of $150-770, the replica's reserve prices ran 15-35% above ERCOT's (e.g. ECRS $396 against $321): it sees reserves as scarcer than ERCOT did. Not yet diagnosed.
+- In 13 of the 17,688 solved runs, PFR on offer could not fill the 1,377 MW minimum; the run then buys less RRS and reports the shortfall.
 
 ## Solver
 
@@ -214,7 +211,7 @@ Limits:
 - Transmission - covers only constraints that bound in the prior 14 days, and is given ERCOT's binding set and flows (see Congestion).
 - No unit commitment - offline and quick-start units are never started.
 - A run is recorded as failed (ok = False) only if PIQP, PIQP with stricter settings and HiGHS all fail.
-- 3 of 2,032 runs in the ancillary-service week do not solve (PIQP stalls; the HiGHS fallback times out).
+- 39 of 17,727 runs (0.2%) in the ancillary-service validation do not solve (PIQP stalls; the HiGHS fallback times out).
 - Batteries - charging efficiency is taken as 1. Where ERCOT charged past the state-of-charge limit, it did so by about 14% (median), consistent with efficiency near 0.88, but that sample only includes the overshoots, so it isn't a fitted value.
 - Daylight-saving: the fall-back repeated hour is matched using ERCOT's RepeatedHourFlag; spring-forward unverified until the daily run reaches mid-March.
 
