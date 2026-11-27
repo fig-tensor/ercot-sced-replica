@@ -1,3 +1,5 @@
+import os
+
 import numpy as np
 import pandas as pd
 
@@ -109,3 +111,20 @@ def type_sensitivity(SF, units):
         S = SF.reindex(columns=g["node"]).fillna(0.0)       # SF[c, n(u)] for each unit, in unit order
         out[k] = S.to_numpy() @ w.to_numpy()                # capacity-weighted average shift factor
     return pd.DataFrame(out, index=SF.index)
+
+def export_network(SF, node, out_dir, label):
+    """Write the fitted network for others to use: shift factors and the resource-to-settlement-point map.
+
+    SF:    shift factors from fit_shift_factors (constraints x settlement points).
+    node:  resource -> settlement point (Series), from unit_nodes; resources without a node are left out.
+    label: tag for the file names, e.g. the run date the fit is for.
+    Writes shift_factors_{label}.csv.gz (one row per constraint, keyed "constraint | contingency"; one column per
+    settlement point) and resource_nodes_{label}.csv (resource, settlement_point). Returns the two paths.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    sf_path = os.path.join(out_dir, f"shift_factors_{label}.csv.gz")
+    rn_path = os.path.join(out_dir, f"resource_nodes_{label}.csv")
+    SF.rename_axis("constraint").to_csv(sf_path, float_format="%.6g")
+    nodes = node.dropna().rename_axis("resource").rename("settlement_point").sort_index()
+    nodes.to_csv(rn_path)
+    return sf_path, rn_path
