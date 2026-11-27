@@ -157,3 +157,16 @@ def test_congestion_matrices_hubs():
     assert Y.iloc[0, 0] == -1.0                     # 29 - 30
     assert M.iloc[0, 0] == 4.0
 
+
+
+def test_export_network_round_trip(tmp_path):
+    from scedrep.network import export_network
+    SF = pd.DataFrame({"HB_A": [0.1234567, -0.5], "LZ_B": [0.0, 0.25]}, index=["L1 | C1", "L2 | C2"])
+    node = pd.Series({"UNIT_1": "HB_A", "UNIT_2": None, "BESS_3": "LZ_B"})
+    sf_path, rn_path = export_network(SF, node, tmp_path / "out", "2026-09-25")
+    back = pd.read_csv(sf_path, index_col="constraint")
+    assert list(back.index) == ["L1 | C1", "L2 | C2"] and list(back.columns) == ["HB_A", "LZ_B"]
+    assert back.loc["L1 | C1", "HB_A"] == pytest.approx(0.123457)   # 6 significant digits
+    rn = pd.read_csv(rn_path)
+    assert list(rn.columns) == ["resource", "settlement_point"]
+    assert list(rn["resource"]) == ["BESS_3", "UNIT_1"]               # unmapped UNIT_2 left out, sorted
